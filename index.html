@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="scripts.js"></script>
+  </head>
+  <body>
+    <div class="page-background" aria-hidden="true"></div>
+    <main class="page shell">
+      <section class="auth-panel">
+        <div class="auth-brand">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <div>
+            <span class="brand-subtitle">Welcome To</span>
+            <h1>OCC Assist</h1>
+          </div>
+        </div>
+        <p class="auth-intro">Secure access to live transit operations and intelligence.</p>
+
+        <form id="login-form" autocomplete="off" novalidate>
+          <div class="field">
+            <label for="email">Email address</label>
+            <input
+              type="email"
+              id="email"
+              name="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            />
+          </div>
+
+          <div class="field">
+            <label for="password">Password</label>
+            <input
+              type="password"
+              id="password"
+              name="password"
+              placeholder="Enter your password"
+              autocomplete="current-password"
+              required
+              minlength="8"
+            />
+          </div>
+
+          <div class="field remember">
+            <label>
+              <input type="checkbox" id="remember" name="remember" />
+              Remember me
+            </label>
+          </div>
+
+          <button class="btn primary" type="submit">Sign in securely</button>
+          <p class="legal">This login page uses client-side validation and strong form handling. Real security requires HTTPS and backend session controls.</p>
+          <div id="form-message" class="message" aria-live="polite"></div>
+        </form>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <a href="tracking.html">Tracking</a>
+      <span>·</span>
+      <a href="driving-hours.html">Driving Hours</a>
+    </footer>
+  </body>
+</html>
