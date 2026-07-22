@@ -521,6 +521,13 @@ body::before {
   margin-top: 10px;
 }
 
+.upcoming-controls[hidden],
+#upcoming-period[hidden],
+#upcoming-message[hidden],
+#upcoming-list[hidden] {
+  display: none !important;
+}
+
 .compact-field {
   margin: 0;
 }

@@ -987,6 +987,7 @@ function initializeDailyOverview() {
     loadUpcomingShifts();
   });
 
+  setUpcomingVisibility(false);
   loadOverview();
 }
 
