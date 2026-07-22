@@ -77,6 +77,7 @@ function initializeMap() {
   const mapStatus = document.querySelector('#map-status');
   const routeToggle = document.querySelector('#static-routes-toggle');
   const routeSelect = document.querySelector('#static-route-select');
+  const directionSelect = document.querySelector('#static-direction-select');
   const routeStatus = document.querySelector('#map-route-status');
   const boltonCenter = [-2.428219, 53.576864];
   const staleAfterMs = 120_000;
@@ -180,6 +181,9 @@ function initializeMap() {
       if (routeSelect) {
         routeSelect.disabled = !enabled;
       }
+      if (directionSelect) {
+        directionSelect.disabled = !enabled;
+      }
     };
 
     const ensureRouteOverlayLayers = () => {
@@ -208,7 +212,13 @@ function initializeMap() {
         type: 'line',
         source: routeSourceId,
         paint: {
-          'line-color': '#35deff',
+          'line-color': [
+            'match',
+            ['get', 'direction'],
+            'inbound', '#23c36b',
+            'outbound', '#d43f3a',
+            '#35deff',
+          ],
           'line-width': 4,
           'line-opacity': 0.95,
         },
@@ -342,7 +352,8 @@ function initializeMap() {
 
       try {
         const selectedRoute = routeSelect?.value || 'all';
-        const query = new URLSearchParams({ route: selectedRoute });
+        const selectedDirection = directionSelect?.value || 'all';
+        const query = new URLSearchParams({ route: selectedRoute, direction: selectedDirection });
         const response = await fetch(`${window.OCC_ASSIST.trackingStaticRoutesUrl}?${query.toString()}`, { cache: 'no-store' });
         const payload = await response.json();
         if (!response.ok || !payload.ok) {
@@ -351,6 +362,9 @@ function initializeMap() {
 
         const routes = payload.routes || [];
         updateRouteOptions(routes, payload.selectedRoute || 'all');
+        if (directionSelect) {
+          directionSelect.value = payload.selectedDirection || selectedDirection;
+        }
 
         const overlayVisible = Boolean(routeToggle?.checked) && payload.configured;
         applyRouteOverlay(payload.featureCollection || emptyRouteFeatureCollection, overlayVisible);
@@ -363,8 +377,14 @@ function initializeMap() {
 
         if (overlayVisible) {
           const selected = routeSelect?.value || 'all';
+          const selectedDirection = directionSelect?.value || 'all';
+          const directionLabel = selectedDirection === 'inbound'
+            ? 'Showing inbound trips only.'
+            : selectedDirection === 'outbound'
+              ? 'Showing outbound trips only.'
+              : 'Showing inbound and outbound trips.';
           setRouteStatus(
-            `${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. ${selected === 'all' ? 'Showing all uploaded routes.' : `Showing route ${selected}.`}`,
+            `${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. ${selected === 'all' ? 'Showing all uploaded routes.' : `Showing route ${selected}.`} ${directionLabel}`,
           );
         } else {
           setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. Enable overlay to display paths.`);
@@ -417,6 +437,12 @@ function initializeMap() {
 
     if (routeSelect) {
       routeSelect.addEventListener('change', () => {
+        loadStaticRoutes();
+      });
+    }
+
+    if (directionSelect) {
+      directionSelect.addEventListener('change', () => {
         loadStaticRoutes();
       });
     }

@@ -956,6 +956,15 @@ def route_sort_key(route: str) -> tuple[int, int, str]:
     return (1, 9999, value.lower())
 
 
+def normalize_gtfs_direction(value: str) -> str:
+    normalized = str(value or '').strip().lower()
+    if normalized in {'0', 'inbound', 'in'}:
+        return 'inbound'
+    if normalized in {'1', 'outbound', 'out'}:
+        return 'outbound'
+    return 'unknown'
+
+
 def read_gtfs_rows(file_path: Path) -> list[dict[str, str]]:
     with file_path.open('r', encoding='utf-8-sig', errors='replace', newline='') as handle:
         reader = csv.DictReader(handle)
@@ -1040,19 +1049,24 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     allowed_route_ids = set(route_meta.keys())
 
     route_shapes: dict[str, set[str]] = {}
+    route_shape_directions: dict[str, dict[str, set[str]]] = {}
     route_trips: dict[str, set[str]] = {}
+    trip_directions: dict[str, str] = {}
     for row in trip_rows:
         route_id = str(row.get('route_id') or '').strip()
         trip_id = str(row.get('trip_id') or '').strip()
         shape_id = str(row.get('shape_id') or '').strip()
+        direction = normalize_gtfs_direction(str(row.get('direction_id') or ''))
         if not route_id:
             continue
         if allowed_route_ids and route_id not in allowed_route_ids:
             continue
         if trip_id:
             route_trips.setdefault(route_id, set()).add(trip_id)
+            trip_directions[trip_id] = direction
         if shape_id:
             route_shapes.setdefault(route_id, set()).add(shape_id)
+            route_shape_directions.setdefault(route_id, {}).setdefault(shape_id, set()).add(direction)
 
     shapes: dict[str, list[tuple[float, float, int]]] = {}
     for row in shape_rows:
@@ -1141,22 +1155,25 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             if len(coordinates) < 2:
                 continue
 
-            features.append(
-                {
-                    'type': 'Feature',
-                    'geometry': {
-                        'type': 'LineString',
-                        'coordinates': coordinates,
-                    },
-                    'properties': {
-                        'routeId': route_id,
-                        'shapeId': shape_id,
-                        'lineName': short_name,
-                        'label': label,
-                    },
-                }
-            )
-            route_feature_count += 1
+            shape_directions = route_shape_directions.get(route_id, {}).get(shape_id, {'unknown'})
+            for direction in sorted(shape_directions):
+                features.append(
+                    {
+                        'type': 'Feature',
+                        'geometry': {
+                            'type': 'LineString',
+                            'coordinates': coordinates,
+                        },
+                        'properties': {
+                            'routeId': route_id,
+                            'shapeId': shape_id,
+                            'lineName': short_name,
+                            'label': label,
+                            'direction': direction,
+                        },
+                    }
+                )
+                route_feature_count += 1
 
         if route_feature_count:
             route_items.append(
@@ -1200,6 +1217,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                         'shapeId': f'stops:{trip_id}',
                         'lineName': short_name,
                         'label': label,
+                        'direction': trip_directions.get(trip_id, 'unknown'),
                     },
                 }
             )
@@ -1258,16 +1276,21 @@ def save_gtfs_data(zip_bytes: bytes, parsed: dict[str, object], original_filenam
     return payload
 
 
-def filter_route_features(cache: dict[str, object], selected_route: str) -> dict[str, object]:
+def filter_route_features(cache: dict[str, object], selected_route: str, selected_direction: str) -> dict[str, object]:
     selected = str(selected_route or 'all').strip()
-    if selected.lower() == 'all':
-        return cache.get('featureCollection', {'type': 'FeatureCollection', 'features': []})
-
+    direction = str(selected_direction or 'all').strip().lower()
     all_features = cache.get('featureCollection', {}).get('features', [])
-    filtered = [
-        feature for feature in all_features
-        if str(feature.get('properties', {}).get('routeId') or '') == selected
-    ]
+    filtered: list[dict[str, object]] = []
+    for feature in all_features:
+        properties = feature.get('properties', {})
+        route_id = str(properties.get('routeId') or '')
+        feature_direction = normalize_gtfs_direction(str(properties.get('direction') or ''))
+        if selected.lower() != 'all' and route_id != selected:
+            continue
+        if direction != 'all' and feature_direction != direction:
+            continue
+        filtered.append(feature)
+
     return {
         'type': 'FeatureCollection',
         'features': filtered,
@@ -1332,6 +1355,9 @@ def upload_gtfs():
 def tracking_static_routes():
     cache = load_gtfs_cache()
     selected_route = str(request.args.get('route', 'all') or 'all').strip()
+    selected_direction = str(request.args.get('direction', 'all') or 'all').strip().lower()
+    if selected_direction not in {'all', 'inbound', 'outbound'}:
+        selected_direction = 'all'
 
     if cache is None:
         return jsonify(
@@ -1340,6 +1366,7 @@ def tracking_static_routes():
                 'configured': False,
                 'message': 'No GTFS ZIP has been uploaded yet.',
                 'selectedRoute': 'all',
+                'selectedDirection': 'all',
                 'routes': [],
                 'featureCollection': {'type': 'FeatureCollection', 'features': []},
             }
@@ -1355,9 +1382,10 @@ def tracking_static_routes():
             'ok': True,
             'configured': True,
             'selectedRoute': selected_route,
+            'selectedDirection': selected_direction,
             'routeCount': int(cache.get('routeCount', 0)),
             'routes': routes,
-            'featureCollection': filter_route_features(cache, selected_route),
+            'featureCollection': filter_route_features(cache, selected_route, selected_direction),
             'uploadedAt': cache.get('uploadedAt', ''),
             'originalFilename': cache.get('originalFilename', ''),
         }

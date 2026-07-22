@@ -27,6 +27,14 @@
           <option value="all">All uploaded routes</option>
         </select>
       </label>
+      <label class="compact-field" for="static-direction-select">
+        <span>Trip direction</span>
+        <select id="static-direction-select" disabled>
+          <option value="all">Inbound and outbound</option>
+          <option value="inbound">Inbound only</option>
+          <option value="outbound">Outbound only</option>
+        </select>
+      </label>
       <p id="map-route-status" class="map-route-status" aria-live="polite"></p>
     </section>
     <div id="map" class="map-shell"></div>
