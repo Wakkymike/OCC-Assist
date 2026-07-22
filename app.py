@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
@@ -32,6 +33,8 @@ PAGE_PERMISSIONS = {
     'driving_hours': 'driving_hours',
     'users': 'user_management',
 }
+SNAPSHOT_RETENTION_DAYS = 14
+SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
 
 
 app = Flask(__name__)
@@ -81,10 +84,44 @@ def init_db() -> None:
             PRIMARY KEY (user_id, permission_key),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS driving_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            driver_name TEXT NOT NULL,
+            employee_number TEXT NOT NULL,
+            segment_summary TEXT NOT NULL,
+            status TEXT NOT NULL,
+            breaches_json TEXT NOT NULL DEFAULT '[]',
+            total_driving_minutes INTEGER NOT NULL DEFAULT 0,
+            total_break_minutes INTEGER NOT NULL DEFAULT 0,
+            spreadover_minutes INTEGER NOT NULL DEFAULT 0,
+            current_continuous_driving_minutes INTEGER NOT NULL DEFAULT 0,
+            non_driving_first_window_minutes INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at_epoch INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_driving_snapshots_user_epoch
+        ON driving_snapshots (user_id, created_at_epoch DESC);
         '''
     )
     database.commit()
     ensure_superadmin(database)
+
+
+def cleanup_expired_snapshots(database: sqlite3.Connection, user_id: int | None = None) -> None:
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    cutoff = now_epoch - SNAPSHOT_RETENTION_SECONDS
+    if user_id is None:
+        database.execute('DELETE FROM driving_snapshots WHERE created_at_epoch < ?', (cutoff,))
+    else:
+        database.execute(
+            'DELETE FROM driving_snapshots WHERE user_id = ? AND created_at_epoch < ?',
+            (user_id, cutoff),
+        )
+    database.commit()
 
 
 def ensure_superadmin(database: sqlite3.Connection) -> None:
@@ -268,6 +305,167 @@ def parse_bods_timestamp(value: str) -> datetime | None:
         return None
 
 
+def parse_clock_to_minutes(value: str) -> int | None:
+    parts = value.split(':')
+    if len(parts) != 2:
+        return None
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+    except ValueError:
+        return None
+    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+        return None
+    return hours * 60 + minutes
+
+
+def format_duration(minutes: int) -> str:
+    safe = max(0, int(minutes))
+    hours = safe // 60
+    remainder = safe % 60
+    return f'{hours}h {remainder:02d}m'
+
+
+def format_duration_compact(minutes: int) -> str:
+    safe = max(0, int(minutes))
+    hours = safe // 60
+    remainder = safe % 60
+    if hours == 0:
+        return f'{remainder}m'
+    return f'{hours}h{remainder:02d}'
+
+
+def validate_segments(payload_segments: object) -> list[dict[str, object]]:
+    if not isinstance(payload_segments, list) or not payload_segments:
+        raise ValueError('Add at least one valid segment before saving.')
+
+    validated: list[dict[str, object]] = []
+    for item in payload_segments:
+        if not isinstance(item, dict):
+            raise ValueError('One or more segments are invalid.')
+        segment_type = str(item.get('type', '')).strip().lower()
+        if segment_type not in {'driving', 'break'}:
+            raise ValueError('Segment type must be driving or break.')
+
+        start = parse_clock_to_minutes(str(item.get('start', '')).strip())
+        end = parse_clock_to_minutes(str(item.get('end', '')).strip())
+        if start is None or end is None or end <= start:
+            raise ValueError('Each segment must have valid start/end times on the same day.')
+
+        validated.append(
+            {
+                'type': segment_type,
+                'startMinutes': start,
+                'endMinutes': end,
+            }
+        )
+
+    ordered = sorted(validated, key=lambda seg: int(seg['startMinutes']))
+    for index in range(1, len(ordered)):
+        previous = ordered[index - 1]
+        current = ordered[index]
+        if int(current['startMinutes']) < int(previous['endMinutes']):
+            raise ValueError('Segments overlap. Adjust segment times before saving.')
+
+    return ordered
+
+
+def calculate_domestic_compliance(segments: list[dict[str, object]]) -> dict[str, object]:
+    minutes_per_hour = 60
+    daily_limit = 10 * minutes_per_hour
+    spreadover_limit = 16 * minutes_per_hour
+    break_trigger = int(5.5 * minutes_per_hour)
+    short_break = 30
+    long_day_threshold = int(8.5 * minutes_per_hour)
+    long_day_non_driving = 45
+
+    if not segments:
+        return {
+            'totalDrivingMinutes': 0,
+            'totalBreakMinutes': 0,
+            'spreadoverMinutes': 0,
+            'currentContinuousDrivingMinutes': 0,
+            'nonDrivingInFirstWindowMinutes': 0,
+            'breaches': [],
+            'status': 'compliant',
+        }
+
+    day_start = int(segments[0]['startMinutes'])
+    day_end = int(segments[-1]['endMinutes'])
+    spreadover_minutes = day_end - day_start
+
+    total_driving = 0
+    total_break = 0
+    current_spell_driving = 0
+    break_rule_a_exceeded = False
+    non_driving_first_window = 0
+    has_break_30_after_window = False
+    long_day_window_end = day_start + long_day_threshold
+
+    for segment in segments:
+        start_minutes = int(segment['startMinutes'])
+        end_minutes = int(segment['endMinutes'])
+        duration = end_minutes - start_minutes
+        if segment['type'] == 'driving':
+            total_driving += duration
+            current_spell_driving += duration
+            if current_spell_driving > break_trigger:
+                break_rule_a_exceeded = True
+            continue
+
+        total_break += duration
+        overlap_start = max(start_minutes, day_start)
+        overlap_end = min(end_minutes, long_day_window_end)
+        non_driving_first_window += max(0, overlap_end - overlap_start)
+
+        if duration >= short_break and start_minutes >= long_day_window_end:
+            has_break_30_after_window = True
+
+        if duration >= short_break:
+            current_spell_driving = 0
+
+    continuous_at_end = 0
+    for segment in reversed(segments):
+        duration = int(segment['endMinutes']) - int(segment['startMinutes'])
+        if segment['type'] == 'driving':
+            continuous_at_end += duration
+            continue
+        if duration >= short_break:
+            break
+
+    breaches: list[str] = []
+    if total_driving > daily_limit:
+        breaches.append(
+            f'Daily driving limit exceeded: {format_duration(total_driving)} (limit {format_duration(daily_limit)}).'
+        )
+
+    if spreadover_minutes > spreadover_limit:
+        breaches.append(
+            f'Spreadover limit exceeded: {format_duration(spreadover_minutes)} (limit {format_duration(spreadover_limit)}).'
+        )
+
+    if spreadover_minutes < long_day_threshold:
+        if break_rule_a_exceeded:
+            breaches.append('Break breach: a 30-minute break is required before driving exceeds 5h 30m.')
+    else:
+        option_a = not break_rule_a_exceeded
+        option_b = non_driving_first_window >= long_day_non_driving and has_break_30_after_window
+        if not option_a and not option_b:
+            breaches.append(
+                'Break breach: for days of 8h 30m or more, either take a 30-minute break before 5h 30m driving, or complete 45 minutes non-driving in first 8h 30m and then take a 30-minute break.'
+            )
+
+    return {
+        'totalDrivingMinutes': total_driving,
+        'totalBreakMinutes': total_break,
+        'spreadoverMinutes': spreadover_minutes,
+        'currentContinuousDrivingMinutes': continuous_at_end,
+        'nonDrivingInFirstWindowMinutes': non_driving_first_window,
+        'breaches': breaches,
+        'status': 'breached' if breaches else 'compliant',
+    }
+
+
 def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
     feed_url = get_bods_feed_url()
     if not feed_url:
@@ -364,6 +562,148 @@ def tracking_vehicles():
 @login_required('driving_hours')
 def driving_hours():
     return render_template('driving-hours.html')
+
+
+@app.get('/api/driving-hours/snapshots')
+@login_required('driving_hours')
+def list_driving_snapshots():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    database = get_db()
+    cleanup_expired_snapshots(database, int(user['id']))
+    rows = database.execute(
+        '''
+        SELECT
+            id,
+            driver_name,
+            employee_number,
+            segment_summary,
+            status,
+            breaches_json,
+            total_driving_minutes,
+            total_break_minutes,
+            spreadover_minutes,
+            current_continuous_driving_minutes,
+            non_driving_first_window_minutes,
+            created_at,
+            created_at_epoch
+        FROM driving_snapshots
+        WHERE user_id = ?
+        ORDER BY created_at_epoch DESC
+        ''',
+        (int(user['id']),),
+    ).fetchall()
+
+    snapshots = [
+        {
+            'id': row['id'],
+            'driverName': row['driver_name'],
+            'employeeNumber': row['employee_number'],
+            'segmentSummary': row['segment_summary'],
+            'status': row['status'],
+            'breaches': json.loads(row['breaches_json']),
+            'metrics': {
+                'totalDrivingMinutes': row['total_driving_minutes'],
+                'totalBreakMinutes': row['total_break_minutes'],
+                'spreadoverMinutes': row['spreadover_minutes'],
+                'currentContinuousDrivingMinutes': row['current_continuous_driving_minutes'],
+                'nonDrivingInFirstWindowMinutes': row['non_driving_first_window_minutes'],
+            },
+            'createdAt': row['created_at'],
+            'createdAtEpoch': row['created_at_epoch'],
+        }
+        for row in rows
+    ]
+    return jsonify({'ok': True, 'snapshots': snapshots, 'retentionDays': SNAPSHOT_RETENTION_DAYS})
+
+
+@app.post('/api/driving-hours/snapshots')
+@login_required('driving_hours')
+def create_driving_snapshot():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    payload = request.get_json(silent=True) or {}
+    driver_name = str(payload.get('driverName', '')).strip()
+    employee_number = str(payload.get('employeeNumber', '')).strip()
+    if not driver_name or not employee_number:
+        return jsonify({'ok': False, 'message': 'Driver name and employee number are required.'}), 400
+
+    try:
+        segments = validate_segments(payload.get('segments'))
+    except ValueError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 400
+
+    compliance = calculate_domestic_compliance(segments)
+    segment_summary = ' '.join(
+        f"{format_duration_compact(int(segment['endMinutes']) - int(segment['startMinutes']))} [{'D' if segment['type'] == 'driving' else 'B'}]"
+        for segment in segments
+    )
+
+    now = datetime.now(timezone.utc)
+    now_epoch = int(now.timestamp())
+    database = get_db()
+    cleanup_expired_snapshots(database, int(user['id']))
+    cursor = database.execute(
+        '''
+        INSERT INTO driving_snapshots (
+            user_id,
+            driver_name,
+            employee_number,
+            segment_summary,
+            status,
+            breaches_json,
+            total_driving_minutes,
+            total_break_minutes,
+            spreadover_minutes,
+            current_continuous_driving_minutes,
+            non_driving_first_window_minutes,
+            created_at_epoch
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            int(user['id']),
+            driver_name,
+            employee_number,
+            segment_summary,
+            compliance['status'],
+            json.dumps(compliance['breaches']),
+            int(compliance['totalDrivingMinutes']),
+            int(compliance['totalBreakMinutes']),
+            int(compliance['spreadoverMinutes']),
+            int(compliance['currentContinuousDrivingMinutes']),
+            int(compliance['nonDrivingInFirstWindowMinutes']),
+            now_epoch,
+        ),
+    )
+    database.commit()
+
+    return jsonify(
+        {
+            'ok': True,
+            'snapshot': {
+                'id': cursor.lastrowid,
+                'driverName': driver_name,
+                'employeeNumber': employee_number,
+                'segmentSummary': segment_summary,
+                'status': compliance['status'],
+                'breaches': compliance['breaches'],
+                'metrics': {
+                    'totalDrivingMinutes': compliance['totalDrivingMinutes'],
+                    'totalBreakMinutes': compliance['totalBreakMinutes'],
+                    'spreadoverMinutes': compliance['spreadoverMinutes'],
+                    'currentContinuousDrivingMinutes': compliance['currentContinuousDrivingMinutes'],
+                    'nonDrivingInFirstWindowMinutes': compliance['nonDrivingInFirstWindowMinutes'],
+                },
+                'createdAt': now.isoformat(),
+                'createdAtEpoch': now_epoch,
+            },
+            'retentionDays': SNAPSHOT_RETENTION_DAYS,
+        }
+    )
 
 
 @app.get('/users')

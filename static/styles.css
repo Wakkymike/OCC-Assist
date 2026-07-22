@@ -444,6 +444,157 @@ body::before {
   color: #ffd2d2;
 }
 
+body.driving-hours-active {
+  overflow: hidden;
+}
+
+.compact-hours-panel {
+  max-height: calc(100vh - 90px);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 14px;
+  padding: 20px;
+}
+
+.compact-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 12px;
+}
+
+.compact-copy {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.compact-note {
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 10px;
+}
+
+.driver-details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.driver-details-grid .field {
+  margin-bottom: 0;
+}
+
+.driver-details-grid input {
+  width: 100%;
+  padding: 12px 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+}
+
+.hours-layout {
+  grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.entry-card {
+  display: grid;
+  grid-template-rows: auto auto auto auto 1fr;
+  min-height: 0;
+}
+
+.compact-fields {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+}
+
+.compact-fields .field {
+  margin-bottom: 0;
+}
+
+.compact-fields .field label {
+  font-size: 0.82rem;
+}
+
+.compact-fields .btn.compact {
+  margin-bottom: 0;
+  height: 48px;
+}
+
+.tight-scroll {
+  max-height: 250px;
+  overflow: auto;
+}
+
+.snapshot-save-row {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.saved-snapshots-card {
+  min-height: 0;
+}
+
+.saved-snapshots-list {
+  margin-top: 10px;
+  max-height: 160px;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+}
+
+.saved-item {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+}
+
+.saved-head {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.saved-head span,
+.saved-head time {
+  color: var(--muted);
+}
+
+.saved-summary-line {
+  margin: 8px 0 4px;
+  font-size: 0.86rem;
+  letter-spacing: 0.01em;
+}
+
+.saved-status {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.84rem;
+}
+
+.saved-status.compliant,
+.saved-item.compliant .saved-status {
+  color: #aef4cd;
+}
+
+.saved-status.breached,
+.saved-item.breached .saved-status {
+  color: #ffc0c0;
+}
+
 .admin-layout {
   display: grid;
   grid-template-columns: minmax(300px, 360px) 1fr;
@@ -564,6 +715,27 @@ body::before {
   .admin-layout,
   .permission-list {
     grid-template-columns: 1fr;
+  }
+
+  .compact-hours-panel {
+    max-height: none;
+    overflow: visible;
+    grid-template-rows: auto;
+  }
+
+  body.driving-hours-active {
+    overflow: auto;
+  }
+
+  .driver-details-grid,
+  .compact-fields,
+  .saved-head {
+    grid-template-columns: 1fr;
+  }
+
+  .tight-scroll,
+  .saved-snapshots-list {
+    max-height: none;
   }
 }
 

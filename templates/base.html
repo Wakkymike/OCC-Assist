@@ -15,7 +15,8 @@
         usersApiUrl: {{ url_for('list_users') | tojson }},
         createUserUrl: {{ url_for('create_user') | tojson }},
         permissionsBaseUrl: '/api/users',
-        trackingVehiclesUrl: {{ url_for('tracking_vehicles') | tojson }}
+        trackingVehiclesUrl: {{ url_for('tracking_vehicles') | tojson }},
+        drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }}
         {% endif %}
       };
     </script>

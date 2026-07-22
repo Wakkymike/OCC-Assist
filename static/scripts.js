@@ -267,16 +267,28 @@ function formatFeedTime(value) {
 }
 
 function initializeDrivingHours() {
+  const app = document.querySelector('#driving-hours-app');
   const segmentForm = document.querySelector('#segment-form');
   const segmentList = document.querySelector('#segment-list');
   const clearButton = document.querySelector('#clear-segments');
   const formMessage = document.querySelector('#segment-message');
   const metricsPanel = document.querySelector('#hours-metrics');
   const alertsPanel = document.querySelector('#hours-alerts');
+  const saveSnapshotButton = document.querySelector('#save-snapshot');
+  const savedSnapshotsPanel = document.querySelector('#saved-snapshots');
+  const savedSummary = document.querySelector('#saved-summary');
+  const activeUserLabel = document.querySelector('#active-user-label');
+  const driverNameInput = document.querySelector('#driver-name');
+  const employeeNumberInput = document.querySelector('#employee-number');
 
-  if (!segmentForm || !segmentList || !clearButton || !metricsPanel || !alertsPanel) {
+  if (
+    !app || !segmentForm || !segmentList || !clearButton || !metricsPanel || !alertsPanel || !saveSnapshotButton
+    || !savedSnapshotsPanel || !savedSummary || !driverNameInput || !employeeNumberInput
+  ) {
     return;
   }
+
+  document.body.classList.add('driving-hours-active');
 
   const minutesPerHour = 60;
   const limits = {
@@ -289,6 +301,16 @@ function initializeDrivingHours() {
   };
 
   let segments = [];
+  let snapshots = [];
+
+  const escapeHtml = (value) => {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  };
 
   const parseTimeToMinutes = (value) => {
     const [hour, minute] = value.split(':').map((item) => Number(item));
@@ -348,6 +370,7 @@ function initializeDrivingHours() {
         currentContinuousDrivingMinutes: 0,
         nonDrivingInFirstWindowMinutes: 0,
         breaches: [],
+        status: 'compliant',
       };
     }
 
@@ -423,6 +446,7 @@ function initializeDrivingHours() {
       currentContinuousDrivingMinutes,
       nonDrivingInFirstWindowMinutes,
       breaches,
+      status: breaches.length ? 'breached' : 'compliant',
     };
   };
 
@@ -454,7 +478,37 @@ function initializeDrivingHours() {
     }
 
     alertsPanel.innerHTML = summary.breaches
-      .map((message) => `<div class="hours-alert breach">${message}</div>`)
+      .map((message) => `<div class="hours-alert breach">${escapeHtml(message)}</div>`)
+      .join('');
+  };
+
+  const renderSavedSnapshots = () => {
+    if (!snapshots.length) {
+      savedSummary.textContent = 'No snapshots saved yet.';
+      savedSnapshotsPanel.innerHTML = '<p class="hours-empty">No snapshots saved yet.</p>';
+      return;
+    }
+
+    savedSummary.textContent = `${snapshots.length} snapshot${snapshots.length === 1 ? '' : 's'} stored.`;
+    savedSnapshotsPanel.innerHTML = snapshots
+      .map((snapshot) => {
+        const timestamp = snapshot.createdAtEpoch
+          ? new Date(snapshot.createdAtEpoch * 1000)
+          : new Date(snapshot.createdAt);
+        const statusClass = snapshot.status === 'breached' ? 'breached' : 'compliant';
+        const statusLabel = snapshot.status === 'breached' ? 'Breached' : 'Compliant';
+        return `
+          <article class="saved-item ${statusClass}">
+            <header class="saved-head">
+              <strong>${escapeHtml(snapshot.driverName)}</strong>
+              <span>${escapeHtml(snapshot.employeeNumber)}</span>
+              <time>${timestamp.toLocaleString()}</time>
+            </header>
+            <p class="saved-summary-line">${escapeHtml(snapshot.segmentSummary)}</p>
+            <p class="saved-status ${statusClass}">${statusLabel}</p>
+          </article>
+        `;
+      })
       .join('');
   };
 
@@ -463,8 +517,9 @@ function initializeDrivingHours() {
 
     if (segments.length === 0) {
       segmentList.innerHTML = '<tr><td colspan="5" class="hours-empty">No segments logged yet.</td></tr>';
-      renderMetrics(calculateCompliance([]));
-      renderAlerts(calculateCompliance([]));
+      const emptySummary = calculateCompliance([]);
+      renderMetrics(emptySummary);
+      renderAlerts(emptySummary);
       return;
     }
 
@@ -486,6 +541,21 @@ function initializeDrivingHours() {
     const summary = calculateCompliance(segments);
     renderMetrics(summary);
     renderAlerts(summary);
+  };
+
+  const loadSnapshots = async () => {
+    if (!window.OCC_ASSIST.drivingSnapshotsUrl) {
+      return;
+    }
+
+    const response = await fetch(window.OCC_ASSIST.drivingSnapshotsUrl, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || 'Unable to load saved snapshots.');
+    }
+
+    snapshots = payload.snapshots || [];
+    renderSavedSnapshots();
   };
 
   segmentForm.addEventListener('submit', (event) => {
@@ -546,7 +616,66 @@ function initializeDrivingHours() {
     setMessage(formMessage, 'All segments cleared.', 'success');
   });
 
+  saveSnapshotButton.addEventListener('click', async () => {
+    const driverName = driverNameInput.value.trim();
+    const employeeNumber = employeeNumberInput.value.trim();
+
+    if (!driverName || !employeeNumber) {
+      setMessage(formMessage, 'Enter the driver name and employee number before saving.', 'error');
+      return;
+    }
+
+    if (!segments.length) {
+      setMessage(formMessage, 'Add at least one segment before saving.', 'error');
+      return;
+    }
+
+    const confirmed = window.confirm('Confirm the entries are correct and save this snapshot?');
+    if (!confirmed) {
+      return;
+    }
+
+    const orderedSegments = [...segments]
+      .sort((left, right) => left.startMinutes - right.startMinutes)
+      .map((segment) => ({
+        type: segment.type,
+        start: formatMinutesAsTime(segment.startMinutes),
+        end: formatMinutesAsTime(segment.endMinutes),
+      }));
+
+    const response = await fetch(window.OCC_ASSIST.drivingSnapshotsUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        driverName,
+        employeeNumber,
+        segments: orderedSegments,
+      }),
+    });
+    const payload = await response.json();
+
+    if (!response.ok || !payload.ok) {
+      setMessage(formMessage, payload.message || 'Unable to save snapshot.', 'error');
+      return;
+    }
+
+    snapshots.unshift(payload.snapshot);
+    renderSavedSnapshots();
+    setMessage(formMessage, 'Snapshot saved to your account.', 'success');
+  });
+
+  const currentUserEmail = window.OCC_ASSIST.currentUser?.email;
+  if (currentUserEmail && activeUserLabel) {
+    activeUserLabel.textContent = `Signed in as ${currentUserEmail}`;
+  }
+
   renderSegments();
+  loadSnapshots().catch((error) => {
+    setMessage(formMessage, error.message || 'Unable to load saved snapshots.', 'error');
+    renderSavedSnapshots();
+  });
 }
 
 function initializeUsersPage() {

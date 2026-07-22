@@ -3,17 +3,36 @@
 {% block title %}Driving Hours{% endblock %}
 
 {% block content %}
-  <section class="content-panel fullwidth">
-    <div class="panel-head">
-      <p class="brand-subtitle">Driver compliance</p>
-      <h1>Driving Hours</h1>
+  <section class="content-panel fullwidth compact-hours-panel" id="driving-hours-app">
+    <div class="panel-head compact-head">
+      <div>
+        <p class="brand-subtitle">Driver compliance</p>
+        <h1>Driving Hours</h1>
+      </div>
+      <p class="section-copy compact-copy">GB domestic rules with secure per-user snapshots.</p>
     </div>
-    <p class="section-copy">Log driving and break segments to calculate daily totals and detect GB domestic rules breaches instantly.</p>
 
-    <section class="hours-layout" id="driving-hours-app">
-      <form id="segment-form" class="hours-card" novalidate>
+    <section class="hours-card" aria-labelledby="driver-details-title">
+      <div class="section-title-row">
+        <h2 id="driver-details-title">Driver Details</h2>
+        <p class="map-note compact-note" id="active-user-label"></p>
+      </div>
+      <div class="driver-details-grid">
+        <div class="field">
+          <label for="driver-name">Driver name</label>
+          <input id="driver-name" name="driver-name" type="text" maxlength="80" autocomplete="name" required />
+        </div>
+        <div class="field">
+          <label for="employee-number">Employee number</label>
+          <input id="employee-number" name="employee-number" type="text" maxlength="40" autocomplete="off" required />
+        </div>
+      </div>
+    </section>
+
+    <section class="hours-layout">
+      <section class="hours-card entry-card">
         <h2>Add Segment</h2>
-        <div class="hours-fields">
+        <form id="segment-form" class="hours-fields compact-fields" novalidate>
           <div class="field">
             <label for="segment-type">Segment type</label>
             <select id="segment-type" name="type" required>
@@ -29,17 +48,15 @@
             <label for="segment-end">End time</label>
             <input id="segment-end" name="end" type="time" required />
           </div>
-        </div>
-        <button class="btn primary" type="submit">Add Segment</button>
+          <button class="btn secondary compact" type="submit">Add</button>
+        </form>
         <div id="segment-message" class="message" aria-live="polite"></div>
-      </form>
 
-      <section class="hours-card">
         <div class="section-row">
           <h2>Logged Segments</h2>
-          <button class="btn secondary compact" id="clear-segments" type="button">Clear All</button>
+          <button class="btn secondary compact" id="clear-segments" type="button">Clear</button>
         </div>
-        <div class="hours-table-wrap">
+        <div class="hours-table-wrap tight-scroll">
           <table class="hours-table">
             <thead>
               <tr>
@@ -55,12 +72,23 @@
         </div>
       </section>
 
-      <section class="hours-card full-span">
+      <section class="hours-card">
         <h2>Compliance Snapshot</h2>
         <div class="hours-metrics" id="hours-metrics"></div>
         <div class="hours-alerts" id="hours-alerts" aria-live="polite"></div>
-        <p class="map-note">Rules applied: GB domestic bus/coach limits including 10h daily driving, 16h spreadover, and mandatory break conditions.</p>
+        <div class="snapshot-save-row">
+          <button class="btn primary compact" id="save-snapshot" type="button">Confirm And Save Snapshot</button>
+          <p class="map-note compact-note">Saved snapshots are private to your account and auto-delete after 14 days.</p>
+        </div>
       </section>
+    </section>
+
+    <section class="hours-card saved-snapshots-card" aria-labelledby="saved-snapshots-title">
+      <div class="section-title-row">
+        <h2 id="saved-snapshots-title">Saved Snapshots (Last 14 Days)</h2>
+        <p class="map-note compact-note" id="saved-summary">No snapshots saved yet.</p>
+      </div>
+      <div id="saved-snapshots" class="saved-snapshots-list" aria-live="polite"></div>
     </section>
   </section>
 {% endblock %}
