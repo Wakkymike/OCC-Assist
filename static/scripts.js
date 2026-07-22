@@ -75,9 +75,8 @@ function setMessage(element, message, variant = '') {
 function initializeMap() {
   const mapContainer = document.querySelector('#map');
   const mapStatus = document.querySelector('#map-status');
-  const routeToggle = document.querySelector('#gnw-routes-toggle');
-  const routeSelect = document.querySelector('#gnw-route-select');
-  const routeVehiclesOnly = document.querySelector('#gnw-route-vehicles-only');
+  const routeToggle = document.querySelector('#static-routes-toggle');
+  const routeSelect = document.querySelector('#static-route-select');
   const routeStatus = document.querySelector('#map-route-status');
   const boltonCenter = [-2.428219, 53.576864];
   const staleAfterMs = 120_000;
@@ -103,6 +102,13 @@ function initializeMap() {
       type: 'FeatureCollection',
       features: [],
     };
+
+    const escapeHtml = (value) => String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
 
     const buildVehicleSignature = (vehicle) => {
       return [
@@ -163,12 +169,6 @@ function initializeMap() {
       mapContainer.style.setProperty('--vehicle-flag-opacity', flagOpacity.toFixed(2));
     };
 
-    const readRouteState = () => ({
-      showRouteOverlay: Boolean(routeToggle?.checked),
-      selectedRoute: routeSelect?.value || 'all',
-      onlySelectedRouteVehicles: Boolean(routeVehiclesOnly?.checked),
-    });
-
     const setRouteStatus = (message) => {
       if (!routeStatus) {
         return;
@@ -176,22 +176,9 @@ function initializeMap() {
       routeStatus.textContent = message;
     };
 
-    const escapeHtml = (value) => String(value || '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-
     const setRouteControlsEnabled = (enabled) => {
       if (routeSelect) {
         routeSelect.disabled = !enabled;
-      }
-      if (routeVehiclesOnly) {
-        routeVehiclesOnly.disabled = !enabled;
-      }
-      if (!enabled && routeVehiclesOnly) {
-        routeVehiclesOnly.checked = false;
       }
     };
 
@@ -257,11 +244,16 @@ function initializeMap() {
 
       const currentSelection = selectedRoute || routeSelect.value || 'all';
       routeSelect.innerHTML = [
-        '<option value="all">All Go North West routes</option>',
-        ...routes.map((route) => `<option value="${escapeHtml(route)}">${escapeHtml(route)}</option>`),
+        '<option value="all">All uploaded routes</option>',
+        ...routes.map((route) => {
+          const routeId = escapeHtml(route.id || '');
+          const routeLabel = escapeHtml(route.label || route.lineName || route.id || 'Route');
+          return `<option value="${routeId}">${routeLabel}</option>`;
+        }),
       ].join('');
 
-      const canKeepSelection = currentSelection === 'all' || routes.includes(currentSelection);
+      const routeIds = routes.map((route) => String(route.id || ''));
+      const canKeepSelection = currentSelection === 'all' || routeIds.includes(currentSelection);
       routeSelect.value = canKeepSelection ? currentSelection : 'all';
     };
 
@@ -325,45 +317,62 @@ function initializeMap() {
       }
 
       try {
-        const routeState = readRouteState();
-        const query = new URLSearchParams({
-          route: routeState.selectedRoute,
-          showRouteOverlay: routeState.showRouteOverlay ? '1' : '0',
-          onlySelectedRouteVehicles: routeState.onlySelectedRouteVehicles ? '1' : '0',
-        });
-        const response = await fetch(`${window.OCC_ASSIST.trackingVehiclesUrl}?${query.toString()}`, { cache: 'no-store' });
+        const response = await fetch(window.OCC_ASSIST.trackingVehiclesUrl, { cache: 'no-store' });
         const payload = await response.json();
         if (!response.ok || !payload.ok) {
           throw new Error(payload.message || 'Unable to load vehicle positions.');
         }
 
-        const routes = payload.goNorthWestRoutes || [];
-        updateRouteOptions(routes, payload.selectedRoute || 'all');
-
         const observedAtMs = Date.parse(payload.sourceTimestamp || payload.refreshedAt) || Date.now();
         const activeVehicles = payload.vehicles || [];
 
         const visibleVehicleCount = renderVehicles(activeVehicles, observedAtMs);
-        applyRouteOverlay(payload.routeOverlay || emptyRouteFeatureCollection, routeState.showRouteOverlay);
-
-        if (routeToggle) {
-          setRouteControlsEnabled(routeToggle.checked);
-        }
-
-        if (routeState.showRouteOverlay) {
-          const selected = routeSelect?.value || 'all';
-          setRouteStatus(
-            `${routes.length} Go North West route${routes.length === 1 ? '' : 's'} available. ${selected === 'all' ? 'Showing all route trails.' : `Showing route ${selected}.`}`,
-          );
-        } else {
-          setRouteStatus(`${routes.length} Go North West route${routes.length === 1 ? '' : 's'} available.`);
-        }
-
         const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
         setMessage(mapStatus, `${visibleVehicleCount} live vehicle${visibleVehicleCount === 1 ? '' : 's'} updated ${updated}.`, 'success');
       } catch (error) {
-        applyRouteOverlay(emptyRouteFeatureCollection, false);
         setMessage(mapStatus, error.message || 'Unable to load vehicle positions.', 'error');
+      }
+    };
+
+    const loadStaticRoutes = async () => {
+      if (!window.OCC_ASSIST.trackingStaticRoutesUrl) {
+        setRouteStatus('Static route API is not configured.');
+        return;
+      }
+
+      try {
+        const selectedRoute = routeSelect?.value || 'all';
+        const query = new URLSearchParams({ route: selectedRoute });
+        const response = await fetch(`${window.OCC_ASSIST.trackingStaticRoutesUrl}?${query.toString()}`, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message || 'Unable to load static route data.');
+        }
+
+        const routes = payload.routes || [];
+        updateRouteOptions(routes, payload.selectedRoute || 'all');
+
+        const overlayVisible = Boolean(routeToggle?.checked) && payload.configured;
+        applyRouteOverlay(payload.featureCollection || emptyRouteFeatureCollection, overlayVisible);
+        setRouteControlsEnabled(Boolean(routeToggle?.checked) && payload.configured);
+
+        if (!payload.configured) {
+          setRouteStatus(payload.message || 'No TransXChange file has been uploaded yet.');
+          return;
+        }
+
+        if (overlayVisible) {
+          const selected = routeSelect?.value || 'all';
+          setRouteStatus(
+            `${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. ${selected === 'all' ? 'Showing all uploaded routes.' : `Showing route ${selected}.`}`,
+          );
+        } else {
+          setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. Enable overlay to display paths.`);
+        }
+      } catch (error) {
+        applyRouteOverlay(emptyRouteFeatureCollection, false);
+        setRouteControlsEnabled(false);
+        setRouteStatus(error.message || 'Unable to load static route data.');
       }
     };
 
@@ -379,35 +388,36 @@ function initializeMap() {
 
     if (map.loaded()) {
       startVehicleRefresh();
+      loadStaticRoutes();
     } else {
-      map.once('load', startVehicleRefresh);
+      map.once('load', () => {
+        startVehicleRefresh();
+        loadStaticRoutes();
+      });
       window.setTimeout(startVehicleRefresh, 1500);
     }
 
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
 
-    setRouteControlsEnabled(Boolean(routeToggle?.checked));
+    setRouteControlsEnabled(false);
+    setRouteStatus('Load a TransXChange file from Users to display static route paths.');
 
     if (routeToggle) {
       routeToggle.addEventListener('change', () => {
-        setRouteControlsEnabled(routeToggle.checked);
         if (!routeToggle.checked) {
+          setRouteControlsEnabled(false);
           applyRouteOverlay(emptyRouteFeatureCollection, false);
+          loadStaticRoutes();
+          return;
         }
-        refreshVehicles();
+        loadStaticRoutes();
       });
     }
 
     if (routeSelect) {
       routeSelect.addEventListener('change', () => {
-        refreshVehicles();
-      });
-    }
-
-    if (routeVehiclesOnly) {
-      routeVehiclesOnly.addEventListener('change', () => {
-        refreshVehicles();
+        loadStaticRoutes();
       });
     }
 
@@ -1213,6 +1223,11 @@ function initializeUsersPage() {
   const refreshButton = document.querySelector('#refresh-users');
   const usersMessage = document.querySelector('#users-message');
   const formMessage = document.querySelector('#user-form-message');
+  const txcUploadForm = document.querySelector('#txc-upload-form');
+  const txcFileInput = document.querySelector('#txc-file');
+  const txcUploadMessage = document.querySelector('#txc-upload-message');
+  const txcUploadSummary = document.querySelector('#txc-upload-summary');
+  const refreshTxcStatusButton = document.querySelector('#refresh-txc-status');
 
   if (!userForm || !usersList) {
     return;
@@ -1230,6 +1245,27 @@ function initializeUsersPage() {
 
     renderUsers(usersList, payload.users, payload.permissionLabels);
     setMessage(usersMessage, `${payload.users.length} user${payload.users.length === 1 ? '' : 's'} loaded.`, 'success');
+  };
+
+  const loadTransxchangeStatus = async () => {
+    if (!window.OCC_ASSIST.transxchangeStatusUrl || !txcUploadSummary) {
+      return;
+    }
+
+    const response = await fetch(window.OCC_ASSIST.transxchangeStatusUrl, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || 'Unable to load TransXChange status.');
+    }
+
+    if (!payload.configured) {
+      txcUploadSummary.textContent = payload.message || 'No TransXChange file uploaded yet.';
+      return;
+    }
+
+    const uploadedAt = payload.uploadedAt ? new Date(payload.uploadedAt).toLocaleString() : 'Unknown';
+    const filename = payload.originalFilename || 'Uploaded file';
+    txcUploadSummary.textContent = `${payload.routeCount} routes available from ${filename} (uploaded ${uploadedAt}).`;
   };
 
   userForm.addEventListener('submit', async (event) => {
@@ -1292,7 +1328,53 @@ function initializeUsersPage() {
     loadUsers();
   });
 
+  if (txcUploadForm && txcFileInput && txcUploadMessage && txcUploadSummary) {
+    txcUploadForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const file = txcFileInput.files && txcFileInput.files[0] ? txcFileInput.files[0] : null;
+      if (!file) {
+        setMessage(txcUploadMessage, 'Choose a TransXChange XML file before uploading.', 'error');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('transxchangeFile', file);
+      setMessage(txcUploadMessage, 'Uploading and extracting route paths...');
+
+      const response = await fetch(window.OCC_ASSIST.transxchangeUploadUrl, {
+        method: 'POST',
+        body: formData,
+      });
+      const payload = await response.json();
+
+      if (!response.ok || !payload.ok) {
+        setMessage(txcUploadMessage, payload.message || 'Unable to upload TransXChange file.', 'error');
+        return;
+      }
+
+      setMessage(txcUploadMessage, `Upload complete. ${payload.routeCount} routes extracted.`, 'success');
+      txcUploadForm.reset();
+      await loadTransxchangeStatus();
+    });
+
+    if (refreshTxcStatusButton) {
+      refreshTxcStatusButton.addEventListener('click', () => {
+        loadTransxchangeStatus().catch((error) => {
+          setMessage(txcUploadMessage, error.message || 'Unable to refresh TransXChange status.', 'error');
+        });
+      });
+    }
+  }
+
   loadUsers();
+  if (txcUploadSummary) {
+    loadTransxchangeStatus().catch((error) => {
+      if (txcUploadMessage) {
+        setMessage(txcUploadMessage, error.message || 'Unable to load TransXChange status.', 'error');
+      }
+    });
+  }
 }
 
 function renderUsers(container, users, permissionLabels) {

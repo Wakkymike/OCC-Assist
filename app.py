@@ -7,7 +7,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
@@ -38,13 +37,10 @@ PAGE_PERMISSIONS = {
 }
 SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
-ROUTE_TRAIL_RETENTION_SECONDS = int(os.environ.get('OCC_ASSIST_ROUTE_TRAIL_RETENTION_SECONDS', '2700'))
-ROUTE_TRAIL_MAX_POINTS = int(os.environ.get('OCC_ASSIST_ROUTE_TRAIL_MAX_POINTS', '120'))
-GO_NORTH_WEST_OPERATOR_MARKERS = ('go north west', 'go-north-west', 'go_north_west', 'gonorthwest', 'gnw', 'bngn')
-
-
-VEHICLE_ROUTE_TRAILS: dict[str, list[dict[str, object]]] = {}
-VEHICLE_ROUTE_TRAILS_LOCK = Lock()
+TRANSXCHANGE_DIR = INSTANCE_DIR / 'transxchange'
+TRANSXCHANGE_UPLOAD_PATH = TRANSXCHANGE_DIR / 'latest-transxchange.xml'
+TRANSXCHANGE_CACHE_PATH = TRANSXCHANGE_DIR / 'routes-cache.json'
+TRANSXCHANGE_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_UPLOAD_BYTES', '25000000'))
 
 
 app = Flask(__name__)
@@ -942,32 +938,7 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
             }
         )
 
-    update_vehicle_route_trails(items)
-
     return items, response_timestamp
-
-
-def parse_bool_query(value: object, default: bool = False) -> bool:
-    if value is None:
-        return default
-    lowered = str(value).strip().lower()
-    if lowered in {'1', 'true', 'yes', 'on'}:
-        return True
-    if lowered in {'0', 'false', 'no', 'off'}:
-        return False
-    return default
-
-
-def is_go_north_west_bee_vehicle(vehicle: dict[str, object]) -> bool:
-    service = str(vehicle.get('service') or '').strip()
-    if not service:
-        return False
-
-    operator = str(vehicle.get('operator') or '').strip().lower()
-    normalized = operator.replace(' ', '').replace('-', '').replace('_', '')
-    if normalized in {'gnw', 'bngn'}:
-        return True
-    return any(marker in operator for marker in GO_NORTH_WEST_OPERATOR_MARKERS)
 
 
 def route_sort_key(route: str) -> tuple[int, int, str]:
@@ -978,184 +949,300 @@ def route_sort_key(route: str) -> tuple[int, int, str]:
     return (1, 9999, value.lower())
 
 
-def get_recorded_at_epoch(vehicle: dict[str, object]) -> int:
-    recorded_at = str(vehicle.get('recordedAt') or '').strip()
-    recorded_time = parse_bods_timestamp(recorded_at)
-    if recorded_time is None:
-        return int(datetime.now(timezone.utc).timestamp())
-    if recorded_time.tzinfo is None:
-        recorded_time = recorded_time.replace(tzinfo=timezone.utc)
-    return int(recorded_time.timestamp())
+def xml_local_name(tag: str) -> str:
+    if '}' in tag:
+        return tag.split('}', 1)[1]
+    return tag
 
 
-def update_vehicle_route_trails(vehicles: list[dict[str, object]]) -> None:
-    now_epoch = int(datetime.now(timezone.utc).timestamp())
-    cutoff = now_epoch - ROUTE_TRAIL_RETENTION_SECONDS
-
-    with VEHICLE_ROUTE_TRAILS_LOCK:
-        for vehicle in vehicles:
-            if not is_go_north_west_bee_vehicle(vehicle):
-                continue
-
-            vehicle_id = str(vehicle.get('id') or '').strip()
-            if not vehicle_id:
-                continue
-
-            service = str(vehicle.get('service') or '').strip()
-            operator = str(vehicle.get('operator') or '').strip()
-            point = {
-                'service': service,
-                'operator': operator,
-                'latitude': float(vehicle.get('latitude') or 0.0),
-                'longitude': float(vehicle.get('longitude') or 0.0),
-                'recordedAtEpoch': get_recorded_at_epoch(vehicle),
-            }
-
-            trail = VEHICLE_ROUTE_TRAILS.setdefault(vehicle_id, [])
-            if trail:
-                previous = trail[-1]
-                if (
-                    previous.get('service') == service
-                    and abs(float(previous.get('latitude', 0.0)) - point['latitude']) < 0.00001
-                    and abs(float(previous.get('longitude', 0.0)) - point['longitude']) < 0.00001
-                ):
-                    previous['recordedAtEpoch'] = point['recordedAtEpoch']
-                else:
-                    trail.append(point)
-            else:
-                trail.append(point)
-
-            if len(trail) > ROUTE_TRAIL_MAX_POINTS:
-                del trail[:len(trail) - ROUTE_TRAIL_MAX_POINTS]
-
-        stale_vehicle_ids = []
-        for vehicle_id, trail in VEHICLE_ROUTE_TRAILS.items():
-            filtered = [entry for entry in trail if int(entry.get('recordedAtEpoch', 0)) >= cutoff]
-            if filtered:
-                VEHICLE_ROUTE_TRAILS[vehicle_id] = filtered
-            else:
-                stale_vehicle_ids.append(vehicle_id)
-
-        for vehicle_id in stale_vehicle_ids:
-            VEHICLE_ROUTE_TRAILS.pop(vehicle_id, None)
+def iter_by_local_name(node: ET.Element, name: str):
+    for element in node.iter():
+        if xml_local_name(element.tag) == name:
+            yield element
 
 
-def list_go_north_west_routes(vehicles: list[dict[str, object]]) -> list[str]:
-    routes = {
-        str(vehicle.get('service') or '').strip()
-        for vehicle in vehicles
-        if is_go_north_west_bee_vehicle(vehicle)
-    }
-    return sorted((route for route in routes if route), key=route_sort_key)
+def get_first_child_text(node: ET.Element, name: str) -> str:
+    for child in node:
+        if xml_local_name(child.tag) == name and child.text:
+            return child.text.strip()
+    return ''
 
 
-def build_go_north_west_route_overlay(selected_route: str) -> dict[str, object]:
-    normalized_route = str(selected_route or '').strip().lower()
-    cutoff = int(datetime.now(timezone.utc).timestamp()) - ROUTE_TRAIL_RETENTION_SECONDS
+def extract_route_link_coordinates(route_link: ET.Element) -> list[list[float]]:
+    points: list[list[float]] = []
+    for location in iter_by_local_name(route_link, 'Location'):
+        lon_text = get_first_child_text(location, 'Longitude')
+        lat_text = get_first_child_text(location, 'Latitude')
+        if not lon_text or not lat_text:
+            continue
+        try:
+            longitude = float(lon_text)
+            latitude = float(lat_text)
+        except ValueError:
+            continue
+        points.append([longitude, latitude])
+    return points
+
+
+def parse_transxchange_routes(xml_bytes: bytes) -> dict[str, object]:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError as error:
+        raise ValueError('Unable to parse TransXChange XML. Check the file and try again.') from error
+
+    route_sections: dict[str, list[str]] = {}
+    for section in iter_by_local_name(root, 'RouteSection'):
+        section_id = str(section.attrib.get('id') or '').strip()
+        if not section_id:
+            continue
+        link_refs = [
+            str(route_link_ref.text or '').strip()
+            for route_link_ref in iter_by_local_name(section, 'RouteLinkRef')
+            if str(route_link_ref.text or '').strip()
+        ]
+        route_sections[section_id] = link_refs
+
+    route_links: dict[str, list[list[float]]] = {}
+    for route_link in iter_by_local_name(root, 'RouteLink'):
+        route_link_id = str(route_link.attrib.get('id') or '').strip()
+        if not route_link_id:
+            continue
+        coordinates = extract_route_link_coordinates(route_link)
+        if len(coordinates) >= 2:
+            route_links[route_link_id] = coordinates
+
+    routes: dict[str, list[str]] = {}
+    for route in iter_by_local_name(root, 'Route'):
+        route_id = str(route.attrib.get('id') or '').strip()
+        if not route_id:
+            continue
+        section_refs = [
+            str(section_ref.text or '').strip()
+            for section_ref in iter_by_local_name(route, 'RouteSectionRef')
+            if str(section_ref.text or '').strip()
+        ]
+        routes[route_id] = section_refs
+
+    route_lines: dict[str, set[str]] = {}
+    for service in iter_by_local_name(root, 'Service'):
+        line_names = [
+            str(line_name.text or '').strip()
+            for line_name in iter_by_local_name(service, 'LineName')
+            if str(line_name.text or '').strip()
+        ]
+        if not line_names:
+            service_code = str(next((item.text for item in iter_by_local_name(service, 'ServiceCode') if item.text), '') or '').strip()
+            if service_code:
+                line_names = [service_code]
+
+        route_refs = [
+            str(route_ref.text or '').strip()
+            for route_ref in iter_by_local_name(service, 'RouteRef')
+            if str(route_ref.text or '').strip()
+        ]
+        for route_ref in route_refs:
+            route_lines.setdefault(route_ref, set()).update(line_names or [route_ref])
+
+    route_items: list[dict[str, object]] = []
     features: list[dict[str, object]] = []
 
-    with VEHICLE_ROUTE_TRAILS_LOCK:
-        for vehicle_id, trail in VEHICLE_ROUTE_TRAILS.items():
-            if len(trail) < 2:
-                continue
+    for route_id, section_refs in routes.items():
+        coordinates: list[list[float]] = []
+        for section_ref in section_refs:
+            for route_link_ref in route_sections.get(section_ref, []):
+                for point in route_links.get(route_link_ref, []):
+                    if not coordinates or coordinates[-1] != point:
+                        coordinates.append(point)
 
-            latest = trail[-1]
-            service = str(latest.get('service') or '').strip()
-            if not service:
-                continue
-            if normalized_route not in {'', 'all'} and service.lower() != normalized_route:
-                continue
-            if not is_go_north_west_bee_vehicle(latest):
-                continue
+        if len(coordinates) < 2:
+            continue
 
-            line_points = [
-                [float(entry.get('longitude', 0.0)), float(entry.get('latitude', 0.0))]
-                for entry in trail
-                if int(entry.get('recordedAtEpoch', 0)) >= cutoff and str(entry.get('service') or '').strip() == service
-            ]
-            if len(line_points) < 2:
-                continue
+        line_name = sorted(route_lines.get(route_id, {route_id}))[0]
+        label = line_name if line_name.lower() == route_id.lower() else f'{line_name} ({route_id})'
 
-            features.append(
-                {
-                    'type': 'Feature',
-                    'geometry': {
-                        'type': 'LineString',
-                        'coordinates': line_points,
-                    },
-                    'properties': {
-                        'vehicleId': vehicle_id,
-                        'service': service,
-                    },
-                }
-            )
+        route_items.append(
+            {
+                'id': route_id,
+                'lineName': line_name,
+                'label': label,
+                'pointCount': len(coordinates),
+            }
+        )
+
+        features.append(
+            {
+                'type': 'Feature',
+                'geometry': {
+                    'type': 'LineString',
+                    'coordinates': coordinates,
+                },
+                'properties': {
+                    'routeId': route_id,
+                    'lineName': line_name,
+                    'label': label,
+                },
+            }
+        )
+
+    route_items.sort(key=lambda item: route_sort_key(str(item['lineName'])))
+    if not route_items:
+        raise ValueError('No route polylines with geo points were found in this TransXChange file.')
 
     return {
-        'type': 'FeatureCollection',
-        'features': features,
+        'routeCount': len(route_items),
+        'routes': route_items,
+        'featureCollection': {
+            'type': 'FeatureCollection',
+            'features': features,
+        },
     }
+
+
+def load_transxchange_cache() -> dict[str, object] | None:
+    if not TRANSXCHANGE_CACHE_PATH.exists():
+        return None
+    try:
+        data = json.loads(TRANSXCHANGE_CACHE_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def save_transxchange_data(xml_bytes: bytes, parsed: dict[str, object], original_filename: str) -> dict[str, object]:
+    TRANSXCHANGE_DIR.mkdir(parents=True, exist_ok=True)
+    TRANSXCHANGE_UPLOAD_PATH.write_bytes(xml_bytes)
+
+    payload = {
+        'uploadedAt': datetime.now(timezone.utc).isoformat(),
+        'originalFilename': original_filename,
+        'routeCount': int(parsed['routeCount']),
+        'routes': parsed['routes'],
+        'featureCollection': parsed['featureCollection'],
+    }
+    TRANSXCHANGE_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
+    return payload
+
+
+def filter_route_features(cache: dict[str, object], selected_route: str) -> dict[str, object]:
+    selected = str(selected_route or 'all').strip()
+    if selected.lower() == 'all':
+        return cache.get('featureCollection', {'type': 'FeatureCollection', 'features': []})
+
+    all_features = cache.get('featureCollection', {}).get('features', [])
+    filtered = [
+        feature for feature in all_features
+        if str(feature.get('properties', {}).get('routeId') or '') == selected
+    ]
+    return {
+        'type': 'FeatureCollection',
+        'features': filtered,
+    }
+
+
+@app.get('/api/transxchange/status')
+@login_required('user_management')
+def transxchange_status():
+    cache = load_transxchange_cache()
+    if cache is None:
+        return jsonify(
+            {
+                'ok': True,
+                'configured': False,
+                'message': 'No TransXChange file uploaded yet.',
+                'routeCount': 0,
+            }
+        )
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'uploadedAt': cache.get('uploadedAt', ''),
+            'originalFilename': cache.get('originalFilename', ''),
+            'routeCount': int(cache.get('routeCount', 0)),
+        }
+    )
+
+
+@app.post('/api/transxchange/upload')
+@login_required('user_management')
+def upload_transxchange():
+    file = request.files.get('transxchangeFile')
+    if file is None or not file.filename:
+        return jsonify({'ok': False, 'message': 'Select a TransXChange XML file to upload.'}), 400
+
+    raw = file.stream.read(TRANSXCHANGE_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > TRANSXCHANGE_MAX_UPLOAD_BYTES:
+        return jsonify({'ok': False, 'message': 'The file is too large.'}), 413
+
+    try:
+        parsed = parse_transxchange_routes(raw)
+    except ValueError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 400
+
+    cache_payload = save_transxchange_data(raw, parsed, file.filename)
+    return jsonify(
+        {
+            'ok': True,
+            'routeCount': int(cache_payload.get('routeCount', 0)),
+            'uploadedAt': cache_payload.get('uploadedAt', ''),
+            'originalFilename': cache_payload.get('originalFilename', ''),
+        }
+    )
+
+
+@app.get('/api/tracking/static-routes')
+@login_required('tracking')
+def tracking_static_routes():
+    cache = load_transxchange_cache()
+    selected_route = str(request.args.get('route', 'all') or 'all').strip()
+
+    if cache is None:
+        return jsonify(
+            {
+                'ok': True,
+                'configured': False,
+                'message': 'No TransXChange file has been uploaded yet.',
+                'selectedRoute': 'all',
+                'routes': [],
+                'featureCollection': {'type': 'FeatureCollection', 'features': []},
+            }
+        )
+
+    routes = cache.get('routes', [])
+    valid_route_ids = {str(route.get('id') or '') for route in routes}
+    if selected_route.lower() != 'all' and selected_route not in valid_route_ids:
+        selected_route = 'all'
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'selectedRoute': selected_route,
+            'routeCount': int(cache.get('routeCount', 0)),
+            'routes': routes,
+            'featureCollection': filter_route_features(cache, selected_route),
+            'uploadedAt': cache.get('uploadedAt', ''),
+            'originalFilename': cache.get('originalFilename', ''),
+        }
+    )
 
 
 @app.get('/api/tracking/vehicles')
 @login_required('tracking')
 def tracking_vehicles():
-    selected_route = str(request.args.get('route', 'all') or 'all').strip()
-    show_route_overlay = parse_bool_query(request.args.get('showRouteOverlay'), default=False)
-    only_selected_route_vehicles = parse_bool_query(request.args.get('onlySelectedRouteVehicles'), default=False)
-
     try:
         vehicles, source_timestamp = fetch_bods_vehicles()
     except RuntimeError as error:
         return jsonify({'ok': False, 'message': str(error)}), 503
 
-    go_north_west_routes = list_go_north_west_routes(vehicles)
-    if selected_route and selected_route.lower() != 'all' and selected_route not in go_north_west_routes:
-        selected_route = 'all'
-
-    filtered_vehicles = vehicles
-    if only_selected_route_vehicles and selected_route.lower() != 'all':
-        filtered_vehicles = [
-            vehicle
-            for vehicle in vehicles
-            if is_go_north_west_bee_vehicle(vehicle) and str(vehicle.get('service') or '').strip() == selected_route
-        ]
-
-    route_overlay = {'type': 'FeatureCollection', 'features': []}
-    if show_route_overlay:
-        route_overlay = build_go_north_west_route_overlay(selected_route)
-        if selected_route.lower() != 'all' and not route_overlay.get('features'):
-            live_points: list[list[float]] = []
-            for vehicle in vehicles:
-                if not is_go_north_west_bee_vehicle(vehicle):
-                    continue
-                if str(vehicle.get('service') or '').strip() != selected_route:
-                    continue
-                live_points.append([float(vehicle.get('longitude', 0.0)), float(vehicle.get('latitude', 0.0))])
-
-            if len(live_points) >= 2:
-                route_overlay['features'].append(
-                    {
-                        'type': 'Feature',
-                        'geometry': {
-                            'type': 'LineString',
-                            'coordinates': live_points,
-                        },
-                        'properties': {
-                            'vehicleId': 'live-current',
-                            'service': selected_route,
-                            'fallback': True,
-                        },
-                    }
-                )
-
     return jsonify(
         {
             'ok': True,
-            'vehicles': filtered_vehicles,
+            'vehicles': vehicles,
             'sourceTimestamp': source_timestamp,
-            'goNorthWestRoutes': go_north_west_routes,
-            'selectedRoute': selected_route,
-            'routeOverlay': route_overlay,
             'refreshedAt': datetime.now(timezone.utc).isoformat(),
         }
     )

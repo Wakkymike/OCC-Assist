@@ -43,5 +43,22 @@
         <div id="users-list" class="users-list"></div>
       </section>
     </section>
+
+    <section class="admin-card txc-upload-card">
+      <div class="section-row">
+        <h2>Static Route Data (TransXChange)</h2>
+        <button class="btn secondary compact" type="button" id="refresh-txc-status">Refresh status</button>
+      </div>
+      <p class="section-copy">Upload a TransXChange XML file from BODS so Tracking can display static route paths for each route.</p>
+      <form id="txc-upload-form" class="txc-upload-form" enctype="multipart/form-data" novalidate>
+        <div class="field">
+          <label for="txc-file">TransXChange XML file</label>
+          <input type="file" id="txc-file" name="transxchangeFile" accept=".xml,.txc" required />
+        </div>
+        <button class="btn primary" type="submit">Upload and extract routes</button>
+      </form>
+      <p id="txc-upload-summary" class="map-note"></p>
+      <div id="txc-upload-message" class="message" aria-live="polite"></div>
+    </section>
   </section>
 {% endblock %}
