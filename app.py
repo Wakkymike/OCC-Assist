@@ -1123,6 +1123,30 @@ def tracking_vehicles():
     route_overlay = {'type': 'FeatureCollection', 'features': []}
     if show_route_overlay:
         route_overlay = build_go_north_west_route_overlay(selected_route)
+        if selected_route.lower() != 'all' and not route_overlay.get('features'):
+            live_points: list[list[float]] = []
+            for vehicle in vehicles:
+                if not is_go_north_west_bee_vehicle(vehicle):
+                    continue
+                if str(vehicle.get('service') or '').strip() != selected_route:
+                    continue
+                live_points.append([float(vehicle.get('longitude', 0.0)), float(vehicle.get('latitude', 0.0))])
+
+            if len(live_points) >= 2:
+                route_overlay['features'].append(
+                    {
+                        'type': 'Feature',
+                        'geometry': {
+                            'type': 'LineString',
+                            'coordinates': live_points,
+                        },
+                        'properties': {
+                            'vehicleId': 'live-current',
+                            'service': selected_route,
+                            'fallback': True,
+                        },
+                    }
+                )
 
     return jsonify(
         {
