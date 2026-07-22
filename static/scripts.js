@@ -1635,6 +1635,36 @@ function initializeUsersPage() {
     setMessage(usersMessage, 'Permission updated.', 'success');
   });
 
+  usersList.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-action="delete-user"]');
+    if (!button) {
+      return;
+    }
+
+    event.preventDefault();
+    const userId = button.dataset.userId;
+    const userEmail = button.dataset.userEmail || 'this user';
+    const isConfirmed = window.confirm(`Delete ${userEmail} and remove all of their saved data?`);
+
+    if (!isConfirmed) {
+      return;
+    }
+
+    setMessage(usersMessage, 'Deleting user and saved data...');
+    const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}`, {
+      method: 'DELETE',
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      setMessage(usersMessage, payload.message || 'Unable to delete user.', 'error');
+      return;
+    }
+
+    setMessage(usersMessage, 'User deleted and saved data removed.', 'success');
+    await loadUsers();
+  });
+
   refreshButton.addEventListener('click', () => {
     loadUsers();
   });
@@ -1689,6 +1719,11 @@ function initializeUsersPage() {
 }
 
 function renderUsers(container, users, permissionLabels) {
+  const currentUser = window.OCC_ASSIST.currentUser || {};
+  const canDeleteUsers = Boolean(
+    currentUser.isSuperadmin || currentUser.permissions?.admin_privileges || currentUser.permissions?.user_management,
+  );
+
   container.innerHTML = users
     .map((user) => {
       const permissionMarkup = Object.entries(permissionLabels)
@@ -1712,6 +1747,11 @@ function renderUsers(container, users, permissionLabels) {
         })
         .join('');
 
+      const isSelf = Number(currentUser.id) === Number(user.id);
+      const deleteButtonMarkup = canDeleteUsers && !isSelf
+        ? `<button class="btn danger compact" type="button" data-action="delete-user" data-user-id="${user.id}" data-user-email="${user.email}">Delete</button>`
+        : '';
+
       return `
         <article class="user-card">
           <div class="user-card-head">
@@ -1719,7 +1759,10 @@ function renderUsers(container, users, permissionLabels) {
               <h3>${user.email}</h3>
               <p class="user-meta">Created ${user.createdAt}</p>
             </div>
-            <span class="badge">${user.isSuperadmin ? 'Superadmin' : 'Standard user'}</span>
+            <div class="user-card-actions">
+              <span class="badge">${user.isSuperadmin ? 'Superadmin' : 'Standard user'}</span>
+              ${deleteButtonMarkup}
+            </div>
           </div>
           <div class="permission-list">${permissionMarkup}</div>
         </article>

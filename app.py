@@ -24,7 +24,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 INSTANCE_DIR = BASE_DIR / 'instance'
-DATABASE_PATH = INSTANCE_DIR / 'occ_assist.db'
+DEFAULT_DATABASE_PATH = INSTANCE_DIR / 'occ_assist.db'
 SUPERADMIN_EMAIL = os.environ.get('OCC_ASSIST_SUPERADMIN_EMAIL', 'michael.dodsworth@gonorthwest.co.uk')
 SUPERADMIN_PASSWORD = os.environ.get('OCC_ASSIST_SUPERADMIN_PASSWORD')
 PERMISSIONS = {
@@ -64,10 +64,18 @@ SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
 LONDON_TZ = ZoneInfo('Europe/London')
 
 
+def get_database_path() -> Path:
+    configured_path = os.environ.get('OCC_ASSIST_DB_PATH')
+    if configured_path:
+        return Path(configured_path)
+    return DEFAULT_DATABASE_PATH
+
+
 def get_db() -> sqlite3.Connection:
     if 'db' not in g:
-        INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(DATABASE_PATH)
+        database_path = get_database_path()
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(database_path)
         connection.row_factory = sqlite3.Row
         g.db = connection
     return g.db
@@ -2042,6 +2050,27 @@ def create_user():
         )
     database.commit()
     return jsonify({'ok': True})
+
+
+@app.delete('/api/users/<int:user_id>')
+@login_required('user_management')
+def delete_user(user_id: int):
+    actor = get_current_user()
+    if actor is None:
+        abort(401)
+
+    target_user = get_db().execute('SELECT id, email, is_superadmin FROM users WHERE id = ?', (user_id,)).fetchone()
+    if target_user is None:
+        abort(404)
+    if int(target_user['id']) == int(actor['id']):
+        return jsonify({'ok': False, 'message': 'You cannot delete your own account.'}), 400
+    if bool(target_user['is_superadmin']) and not bool(actor['is_superadmin']):
+        return jsonify({'ok': False, 'message': 'Only superadmins can delete superadmin accounts.'}), 403
+
+    database = get_db()
+    database.execute('DELETE FROM users WHERE id = ?', (user_id,))
+    database.commit()
+    return jsonify({'ok': True, 'deletedUserId': user_id})
 
 
 @app.patch('/api/users/<int:user_id>/permissions')

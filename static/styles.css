@@ -1314,6 +1314,12 @@ body.driving-hours-active .shell {
   gap: 16px;
 }
 
+.user-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .users-list {
   display: grid;
   gap: 18px;
@@ -1355,6 +1361,16 @@ body.driving-hours-active .shell {
   background: rgba(74, 144, 255, 0.14);
   color: #cfe0ff;
   font-size: 0.9rem;
+}
+
+.btn.danger {
+  background: rgba(220, 53, 69, 0.18);
+  color: #ffdce1;
+  border-color: rgba(220, 53, 69, 0.35);
+}
+
+.btn.danger:hover {
+  background: rgba(220, 53, 69, 0.28);
 }
 
 .permission-list {
