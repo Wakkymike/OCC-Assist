@@ -71,22 +71,122 @@ function setMessage(element, message, variant = '') {
 
 function initializeMap() {
   const mapContainer = document.querySelector('#map');
+  const mapStatus = document.querySelector('#map-status');
   if (!mapContainer || typeof mapboxgl === 'undefined') {
     return;
   }
 
   if (window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE') {
     mapboxgl.accessToken = window.MAPBOX_TOKEN;
-    new mapboxgl.Map({
+    const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/mapbox/dark-v11',
       center: [-0.1276, 51.5074],
       zoom: 10,
     });
+
+    const markers = new Map();
+    let hasFittedVehicles = false;
+
+    const renderVehicles = (vehicles) => {
+      const activeIds = new Set();
+      const bounds = new mapboxgl.LngLatBounds();
+
+      vehicles.forEach((vehicle) => {
+        activeIds.add(vehicle.id);
+        const lngLat = [vehicle.longitude, vehicle.latitude];
+        bounds.extend(lngLat);
+
+        const labelText = [
+          `Service ${vehicle.service}`,
+          vehicle.destination,
+          vehicle.direction,
+          `Fleet ${vehicle.fleetNumber}`,
+        ].join(' | ');
+
+        if (markers.has(vehicle.id)) {
+          const markerState = markers.get(vehicle.id);
+          markerState.marker.setLngLat(lngLat);
+          markerState.flag.textContent = labelText;
+          markerState.flag.dataset.direction = vehicle.direction;
+          return;
+        }
+
+        const markerElement = document.createElement('div');
+        markerElement.className = 'vehicle-marker';
+
+        const flag = document.createElement('div');
+        flag.className = 'vehicle-flag';
+        flag.dataset.direction = vehicle.direction;
+        flag.textContent = labelText;
+
+        const pin = document.createElement('div');
+        pin.className = 'vehicle-pin';
+        pin.textContent = vehicle.service;
+
+        markerElement.append(flag, pin);
+
+        const marker = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' })
+          .setLngLat(lngLat)
+          .addTo(map);
+
+        markers.set(vehicle.id, { marker, flag });
+      });
+
+      markers.forEach((markerState, markerId) => {
+        if (!activeIds.has(markerId)) {
+          markerState.marker.remove();
+          markers.delete(markerId);
+        }
+      });
+
+      if (!hasFittedVehicles && vehicles.length > 0) {
+        map.fitBounds(bounds, { padding: 72, maxZoom: 12, duration: 0 });
+        hasFittedVehicles = true;
+      }
+    };
+
+    const refreshVehicles = async () => {
+      if (!window.OCC_ASSIST.trackingVehiclesUrl) {
+        return;
+      }
+
+      try {
+        const response = await fetch(window.OCC_ASSIST.trackingVehiclesUrl, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message || 'Unable to load vehicle positions.');
+        }
+
+        renderVehicles(payload.vehicles || []);
+        const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
+        setMessage(mapStatus, `${payload.vehicles.length} vehicle${payload.vehicles.length === 1 ? '' : 's'} updated ${updated}.`, 'success');
+      } catch (error) {
+        setMessage(mapStatus, error.message || 'Unable to load vehicle positions.', 'error');
+      }
+    };
+
+    map.on('load', () => {
+      refreshVehicles();
+      window.setInterval(refreshVehicles, 7000);
+    });
     return;
   }
 
   mapContainer.innerHTML = '<div class="placeholder-card"><p>Mapbox token is not configured yet.</p></div>';
+}
+
+function formatFeedTime(value) {
+  if (!value) {
+    return 'just now';
+  }
+
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    return 'just now';
+  }
+
+  return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function initializeUsersPage() {

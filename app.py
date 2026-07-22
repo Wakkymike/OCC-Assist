@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
+import xml.etree.ElementTree as ET
 
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -32,6 +37,11 @@ PAGE_PERMISSIONS = {
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('OCC_ASSIST_SECRET_KEY', 'change-me-before-production')
 app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
+app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
+app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
+
+
+SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
 
 
 def get_db() -> sqlite3.Connection:
@@ -226,6 +236,98 @@ def live_updates():
 @login_required('tracking')
 def tracking():
     return render_template('tracking.html')
+
+
+def get_xml_text(node: ET.Element | None, path: str) -> str:
+    if node is None:
+        return ''
+    element = node.find(path, SIRI_NAMESPACE)
+    if element is None or element.text is None:
+        return ''
+    return element.text.strip()
+
+
+def get_bods_feed_url() -> str | None:
+    api_key = app.config['BODS_API_KEY']
+    feed_id = app.config['BODS_FEED_ID']
+    if not api_key or not feed_id:
+        return None
+    query = urlencode({'api_key': api_key})
+    return f'https://data.bus-data.dft.gov.uk/api/v1/datafeed/{feed_id}/?{query}'
+
+
+def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
+    feed_url = get_bods_feed_url()
+    if not feed_url:
+        raise RuntimeError('BODS feed credentials are not configured.')
+
+    try:
+        with urlopen(feed_url, timeout=20) as response:
+            payload = response.read()
+    except HTTPError as error:
+        raise RuntimeError(f'BODS feed returned HTTP {error.code}.') from error
+    except URLError as error:
+        raise RuntimeError('BODS feed is not reachable right now.') from error
+
+    root = ET.fromstring(payload)
+    response_timestamp = get_xml_text(root, './/siri:VehicleMonitoringDelivery/siri:ResponseTimestamp')
+    items: list[dict[str, object]] = []
+
+    for activity in root.findall('.//siri:VehicleActivity', SIRI_NAMESPACE):
+        journey = activity.find('siri:MonitoredVehicleJourney', SIRI_NAMESPACE)
+        if journey is None:
+            continue
+
+        latitude = get_xml_text(journey, 'siri:VehicleLocation/siri:Latitude')
+        longitude = get_xml_text(journey, 'siri:VehicleLocation/siri:Longitude')
+        if not latitude or not longitude:
+            continue
+
+        service = get_xml_text(journey, 'siri:PublishedLineName') or get_xml_text(journey, 'siri:LineRef')
+        destination = get_xml_text(journey, 'siri:DestinationName') or 'Destination unavailable'
+        direction = (get_xml_text(journey, 'siri:DirectionRef') or 'unknown').lower()
+        fleet_number = (
+            get_xml_text(activity, 'siri:Extensions/siri:VehicleJourney/siri:VehicleUniqueId')
+            or get_xml_text(journey, 'siri:VehicleRef')
+            or 'Unknown'
+        )
+        operator_ref = get_xml_text(journey, 'siri:OperatorRef')
+        recorded_at = get_xml_text(activity, 'siri:RecordedAtTime')
+        journey_ref = get_xml_text(journey, 'siri:FramedVehicleJourneyRef/siri:DatedVehicleJourneyRef')
+
+        items.append(
+            {
+                'id': get_xml_text(activity, 'siri:ItemIdentifier') or f'{fleet_number}-{journey_ref or service}',
+                'latitude': float(latitude),
+                'longitude': float(longitude),
+                'service': service,
+                'destination': destination.replace('_', ' '),
+                'direction': direction,
+                'fleetNumber': fleet_number,
+                'operator': operator_ref,
+                'recordedAt': recorded_at,
+            }
+        )
+
+    return items, response_timestamp
+
+
+@app.get('/api/tracking/vehicles')
+@login_required('tracking')
+def tracking_vehicles():
+    try:
+        vehicles, source_timestamp = fetch_bods_vehicles()
+    except RuntimeError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 503
+
+    return jsonify(
+        {
+            'ok': True,
+            'vehicles': vehicles,
+            'sourceTimestamp': source_timestamp,
+            'refreshedAt': datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 @app.get('/driving-hours')

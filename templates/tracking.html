@@ -17,6 +17,9 @@
       <h1>Tracking</h1>
     </div>
     <div id="map" class="map-shell"></div>
-    <p class="map-note">The live vehicle map is connected to Mapbox and ready for operational overlays.</p>
+    <div class="map-meta">
+      <p class="map-note">Live BODS vehicle positions refresh every 7 seconds.</p>
+      <p id="map-status" class="map-status" aria-live="polite"></p>
+    </div>
   </section>
 {% endblock %}

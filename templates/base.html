@@ -14,7 +14,8 @@
         {% if current_user %},
         usersApiUrl: {{ url_for('list_users') | tojson }},
         createUserUrl: {{ url_for('create_user') | tojson }},
-        permissionsBaseUrl: '/api/users'
+        permissionsBaseUrl: '/api/users',
+        trackingVehiclesUrl: {{ url_for('tracking_vehicles') | tojson }}
         {% endif %}
       };
     </script>
