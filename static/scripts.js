@@ -303,6 +303,7 @@ function initializeDrivingHours() {
 
   let segments = [];
   let snapshots = [];
+  let editingSegmentId = null;
 
   const normalizeForSearch = (value) => String(value || '').toLowerCase().trim();
 
@@ -549,6 +550,26 @@ function initializeDrivingHours() {
       .join('');
   };
 
+  const resetSegmentFormMode = () => {
+    editingSegmentId = null;
+    const submitButton = segmentForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.textContent = 'Add';
+    }
+  };
+
+  const setSegmentFormForEdit = (segment) => {
+    editingSegmentId = segment.id;
+    segmentForm.type.value = segment.type;
+    segmentForm.start.value = formatMinutesAsTime(segment.startMinutes);
+    segmentForm.end.value = formatMinutesAsTime(segment.endMinutes);
+    const submitButton = segmentForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.textContent = 'Update';
+    }
+    setMessage(formMessage, 'Editing selected segment. Update times/type and click Update.', 'success');
+  };
+
   const renderSegments = () => {
     sortSegments();
 
@@ -569,7 +590,12 @@ function initializeDrivingHours() {
             <td>${formatMinutesAsTime(segment.startMinutes)}</td>
             <td>${formatMinutesAsTime(segment.endMinutes)}</td>
             <td>${formatDuration(duration)}</td>
-            <td><button class="btn secondary compact" type="button" data-remove-segment="${segment.id}">Remove</button></td>
+            <td>
+              <div class="segment-actions">
+                <button class="btn secondary compact" type="button" data-edit-segment="${segment.id}">Edit</button>
+                <button class="btn secondary compact" type="button" data-remove-segment="${segment.id}">Remove</button>
+              </div>
+            </td>
           </tr>
         `;
       })
@@ -614,8 +640,39 @@ function initializeDrivingHours() {
       return;
     }
 
-    if (hasOverlap(startMinutes, endMinutes)) {
+    if (hasOverlap(startMinutes, endMinutes) && !editingSegmentId) {
       setMessage(formMessage, 'This segment overlaps an existing segment. Remove or adjust the overlap first.', 'error');
+      return;
+    }
+
+    if (editingSegmentId) {
+      const existing = segments.find((segment) => segment.id === editingSegmentId);
+      if (!existing) {
+        resetSegmentFormMode();
+        setMessage(formMessage, 'Segment no longer exists. Please add it again.', 'error');
+        segmentForm.reset();
+        return;
+      }
+
+      const overlapsOther = segments.some((segment) => {
+        if (segment.id === editingSegmentId) {
+          return false;
+        }
+        return !(endMinutes <= segment.startMinutes || startMinutes >= segment.endMinutes);
+      });
+
+      if (overlapsOther) {
+        setMessage(formMessage, 'Updated segment overlaps another segment. Adjust the times and try again.', 'error');
+        return;
+      }
+
+      existing.type = type;
+      existing.startMinutes = startMinutes;
+      existing.endMinutes = endMinutes;
+      renderSegments();
+      setMessage(formMessage, 'Segment updated.', 'success');
+      segmentForm.reset();
+      resetSegmentFormMode();
       return;
     }
 
@@ -629,6 +686,7 @@ function initializeDrivingHours() {
     renderSegments();
     setMessage(formMessage, 'Segment added.', 'success');
     segmentForm.reset();
+    resetSegmentFormMode();
   });
 
   segmentList.addEventListener('click', (event) => {
@@ -638,17 +696,35 @@ function initializeDrivingHours() {
     }
 
     const removeId = trigger.getAttribute('data-remove-segment');
+    const editId = trigger.getAttribute('data-edit-segment');
+
+    if (editId) {
+      const segment = segments.find((item) => item.id === editId);
+      if (!segment) {
+        setMessage(formMessage, 'Unable to edit that segment right now.', 'error');
+        return;
+      }
+      setSegmentFormForEdit(segment);
+      return;
+    }
+
     if (!removeId) {
       return;
     }
 
     segments = segments.filter((segment) => segment.id !== removeId);
+    if (editingSegmentId === removeId) {
+      resetSegmentFormMode();
+      segmentForm.reset();
+    }
     renderSegments();
     setMessage(formMessage, 'Segment removed.', 'success');
   });
 
   clearButton.addEventListener('click', () => {
     segments = [];
+    resetSegmentFormMode();
+    segmentForm.reset();
     renderSegments();
     setMessage(formMessage, 'All segments cleared.', 'success');
   });
@@ -713,6 +789,7 @@ function initializeDrivingHours() {
   }
 
   renderSegments();
+  resetSegmentFormMode();
   loadSnapshots().catch((error) => {
     setMessage(formMessage, error.message || 'Unable to load saved snapshots.', 'error');
     renderSavedSnapshots();

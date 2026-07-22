@@ -385,6 +385,12 @@ body::before {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.segment-actions {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .hours-table th {
   color: #cdd7ed;
   font-weight: 600;
