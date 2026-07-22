@@ -349,6 +349,65 @@ def daily_overview_shifts():
     )
 
 
+@app.get('/api/overview/upcoming-shifts')
+@login_required('live_updates')
+def daily_overview_upcoming_shifts():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    ical_url = get_user_rotacloud_ical_url(int(user['id']))
+    if not ical_url:
+        return jsonify(
+            {
+                'ok': True,
+                'configured': False,
+                'scope': 'week',
+                'offset': 0,
+                'periodLabel': '',
+                'shifts': [],
+                'message': 'No RotaCloud iCal link configured yet.',
+            }
+        )
+
+    scope = str(request.args.get('scope', 'week')).strip().lower()
+    if scope not in {'week', 'month'}:
+        scope = 'week'
+
+    try:
+        offset = int(request.args.get('offset', '0'))
+    except ValueError:
+        offset = 0
+    offset = max(-12, min(24, offset))
+
+    period_start_local, period_end_local, period_label = get_period_bounds(scope, offset)
+    period_start_utc = period_start_local.astimezone(timezone.utc)
+    period_end_utc = period_end_local.astimezone(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
+
+    try:
+        all_events = fetch_rotacloud_events(ical_url)
+    except RuntimeError as error:
+        return jsonify({'ok': False, 'configured': True, 'message': str(error)}), 503
+
+    filtered_events = [
+        event for event in all_events
+        if event['end'] >= now_utc and event['start'] < period_end_utc and event['end'] > period_start_utc
+    ]
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'scope': scope,
+            'offset': offset,
+            'periodLabel': period_label,
+            'shifts': [serialize_shift_event(event) for event in filtered_events],
+            'weekStartsOn': 'Sunday',
+        }
+    )
+
+
 @app.get('/tracking')
 @login_required('tracking')
 def tracking():
@@ -900,65 +959,6 @@ def list_driving_snapshots():
             created_at,
             created_at_epoch
         FROM driving_snapshots
-
-
-@app.get('/api/overview/upcoming-shifts')
-@login_required('live_updates')
-def daily_overview_upcoming_shifts():
-    user = get_current_user()
-    if user is None:
-        abort(401)
-
-    ical_url = get_user_rotacloud_ical_url(int(user['id']))
-    if not ical_url:
-        return jsonify(
-            {
-                'ok': True,
-                'configured': False,
-                'scope': 'week',
-                'offset': 0,
-                'periodLabel': '',
-                'shifts': [],
-                'message': 'No RotaCloud iCal link configured yet.',
-            }
-        )
-
-    scope = str(request.args.get('scope', 'week')).strip().lower()
-    if scope not in {'week', 'month'}:
-        scope = 'week'
-
-    try:
-        offset = int(request.args.get('offset', '0'))
-    except ValueError:
-        offset = 0
-    offset = max(-12, min(24, offset))
-
-    period_start_local, period_end_local, period_label = get_period_bounds(scope, offset)
-    period_start_utc = period_start_local.astimezone(timezone.utc)
-    period_end_utc = period_end_local.astimezone(timezone.utc)
-    now_utc = datetime.now(timezone.utc)
-
-    try:
-        all_events = fetch_rotacloud_events(ical_url)
-    except RuntimeError as error:
-        return jsonify({'ok': False, 'configured': True, 'message': str(error)}), 503
-
-    filtered_events = [
-        event for event in all_events
-        if event['end'] >= now_utc and event['start'] < period_end_utc and event['end'] > period_start_utc
-    ]
-
-    return jsonify(
-        {
-            'ok': True,
-            'configured': True,
-            'scope': scope,
-            'offset': offset,
-            'periodLabel': period_label,
-            'shifts': [serialize_shift_event(event) for event in filtered_events],
-            'weekStartsOn': 'Sunday',
-        }
-    )
         WHERE user_id = ?
         ORDER BY created_at_epoch DESC
         ''',
