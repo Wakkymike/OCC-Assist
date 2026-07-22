@@ -311,18 +311,17 @@ body::before {
 .tracking-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 14px;
+  gap: 10px;
   align-items: stretch;
   min-height: 0;
   height: 100%;
+  padding: 8px 10px 10px;
 }
 
 .tracking-map-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
-  gap: 10px;
 }
 
 .map-shell-tracking {
@@ -330,6 +329,7 @@ body::before {
   height: 100%;
   margin-top: 0;
   position: relative;
+  border-radius: 14px;
 }
 
 .map-shell-tracking #map {
@@ -352,11 +352,17 @@ body::before {
 }
 
 .tracking-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 10;
   margin-top: 0;
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(7, 17, 31, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(8px);
 }
 
 .toggle-switch {
@@ -492,11 +498,21 @@ body::before {
 }
 
 .map-meta {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 10;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 18px;
+  gap: 12px;
   flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(7, 17, 31, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
 }
 
 .map-status {
@@ -512,23 +528,57 @@ body::before {
 }
 
 .vehicle-flag {
-  max-width: 300px;
+  max-width: 320px;
   padding: 8px 12px;
   border-radius: 14px;
   background: rgba(7, 17, 27, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 14px 28px rgba(3, 9, 24, 0.38);
   color: #eef3ff;
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 600;
-  line-height: 1.4;
-  text-align: center;
-  white-space: nowrap;
+  line-height: 1.3;
+  text-align: left;
+  white-space: normal;
   transform: scale(var(--vehicle-flag-scale));
   transform-origin: bottom center;
   opacity: var(--vehicle-flag-opacity);
   transition: transform 0.18s ease, opacity 0.18s ease;
   pointer-events: none;
+}
+
+.vehicle-flag-line {
+  display: block;
+}
+
+.vehicle-flag-line + .vehicle-flag-line {
+  margin-top: 2px;
+}
+
+.vehicle-direction-badge {
+  font-weight: 800;
+  margin-left: 6px;
+}
+
+.vehicle-direction-badge.inbound {
+  color: #ff5f62;
+}
+
+.vehicle-direction-badge.outbound {
+  color: #66eabe;
+}
+
+.vehicle-direction-badge.unknown {
+  color: #ffd27d;
+}
+
+.vehicle-flag .service-line {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.vehicle-flag .board-line {
+  color: #b6c8e9;
 }
 
 .vehicle-flag[data-direction='inbound'] {
@@ -540,7 +590,7 @@ body::before {
 }
 
 .vehicle-pin {
-  min-width: 42px;
+  min-width: 46px;
   min-height: 42px;
   padding: 0 10px;
   display: inline-flex;
@@ -824,6 +874,37 @@ body::before {
   margin-top: 14px;
 }
 
+.service-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: #d9edff;
+  cursor: pointer;
+}
+
+.service-group-toggle:hover {
+  border-color: rgba(124, 211, 255, 0.7);
+  background: rgba(74, 144, 255, 0.16);
+}
+
+.service-group-toggle .chevron {
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+
+.service-group.is-collapsed .service-group-toggle .chevron {
+  transform: rotate(-90deg);
+}
+
+.service-group.is-collapsed .service-group-list {
+  display: none;
+}
+
 .service-card {
   padding: 16px;
   border-radius: 18px;
@@ -897,18 +978,28 @@ body.tracking-active .page {
 
 body.tracking-active .shell {
   max-width: 100%;
+  width: 100%;
   height: 100%;
   min-height: 0;
-  padding-top: 12px;
-  padding-bottom: 12px;
+  padding: 0;
 }
 
 body.tracking-active .tracking-panel {
+  width: 100%;
   height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 18px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body.tracking-active .tracking-head {
+  display: none;
 }
 
 body.tracking-active .panel-head {

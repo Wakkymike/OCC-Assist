@@ -176,6 +176,7 @@ function initializeMap() {
     const vehicleStates = new Map();
     const vehicleDataById = new Map();
     let selectedVehicleId = null;
+    let selectedVehicleFleet = null;
     const resizeMap = () => {
       syncMapContainerSize();
       map.resize();
@@ -190,6 +191,30 @@ function initializeMap() {
     const stopLayerId = 'gnw-stop-overlay';
     const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
+
+    const normalizeFleetKey = (fleetNumber) => String(fleetNumber || '').trim().toLowerCase();
+
+    const directionBadgeMarkup = (direction) => {
+      const normalized = String(direction || '').trim().toLowerCase();
+      if (normalized === 'inbound') {
+        return '<span class="vehicle-direction-badge inbound">[I]</span>';
+      }
+      if (normalized === 'outbound') {
+        return '<span class="vehicle-direction-badge outbound">[O]</span>';
+      }
+      return '<span class="vehicle-direction-badge unknown">[?]</span>';
+    };
+
+    const buildVehicleFlagMarkup = (vehicle) => {
+      const service = escapeHtml(formatRouteLabel(vehicle));
+      const destination = escapeHtml(String(vehicle?.destination || 'Unknown destination').trim() || 'Unknown destination');
+      const board = escapeHtml(formatBoardNumber(vehicle));
+      return `
+        <span class="vehicle-flag-line service-line">${service} ${directionBadgeMarkup(vehicle?.direction)}</span>
+        <span class="vehicle-flag-line destination-line">${destination}</span>
+        <span class="vehicle-flag-line board-line">RB ${board}</span>
+      `;
+    };
 
     const setRouteStatus = (message) => {
       if (routeStatus) {
@@ -252,19 +277,25 @@ function initializeMap() {
     const selectVehicle = (vehicleId) => {
       selectedVehicleId = vehicleId;
       if (!vehicleId) {
+        selectedVehicleFleet = null;
         setSidebarEmpty('Select a bus marker to inspect its service details.');
         syncSelectedMarkerStyles();
         return;
       }
-      setSidebarVehicle(vehicleDataById.get(vehicleId) || null);
+      const selectedVehicle = vehicleDataById.get(vehicleId) || null;
+      selectedVehicleFleet = normalizeFleetKey(selectedVehicle?.fleetNumber);
+      setSidebarVehicle(selectedVehicle);
       syncSelectedMarkerStyles();
     };
 
-    const ensureVehicleMarker = (state, lngLat, labelText, direction, service, vehicle) => {
+    const ensureVehicleMarker = (state, lngLat, vehicle) => {
+      const direction = String(vehicle.direction || 'unknown').trim().toLowerCase();
+      const fleetDisplay = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
       if (state.marker) {
         state.marker.setLngLat(lngLat);
-        state.flag.textContent = labelText;
         state.flag.dataset.direction = direction;
+        state.flag.innerHTML = buildVehicleFlagMarkup(vehicle);
+        state.pin.textContent = fleetDisplay;
         state.element.classList.toggle('is-selected', vehicle.id === selectedVehicleId);
         state.data = vehicle;
         return;
@@ -276,11 +307,11 @@ function initializeMap() {
       const flag = document.createElement('div');
       flag.className = 'vehicle-flag';
       flag.dataset.direction = direction;
-      flag.textContent = labelText;
+      flag.innerHTML = buildVehicleFlagMarkup(vehicle);
 
       const pin = document.createElement('div');
       pin.className = 'vehicle-pin';
-      pin.textContent = service;
+      pin.textContent = fleetDisplay;
 
       markerElement.append(flag, pin);
       markerElement.addEventListener('click', (event) => {
@@ -289,6 +320,7 @@ function initializeMap() {
       });
 
       state.flag = flag;
+      state.pin = pin;
       state.element = markerElement;
       state.data = vehicle;
       state.marker = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' }).setLngLat(lngLat).addTo(map);
@@ -380,15 +412,14 @@ function initializeMap() {
         activeIds.add(vehicle.id);
         vehicleDataById.set(vehicle.id, vehicle);
         const lngLat = [vehicle.longitude, vehicle.latitude];
-        const labelText = [formatRouteLabel(vehicle), vehicle.destination].filter(Boolean).join(' • ');
         if (vehicleStates.has(vehicle.id)) {
           const vehicleState = vehicleStates.get(vehicle.id);
-          ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, formatRouteLabel(vehicle), vehicle);
+          ensureVehicleMarker(vehicleState, lngLat, vehicle);
           visibleVehicleCount += 1;
           return;
         }
-        const vehicleState = { marker: null, flag: null, element: null, data: vehicle };
-        ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, formatRouteLabel(vehicle), vehicle);
+        const vehicleState = { marker: null, flag: null, pin: null, element: null, data: vehicle };
+        ensureVehicleMarker(vehicleState, lngLat, vehicle);
         vehicleStates.set(vehicle.id, vehicleState);
         visibleVehicleCount += 1;
       });
@@ -399,11 +430,21 @@ function initializeMap() {
           vehicleDataById.delete(vehicleId);
         }
       });
+      if (selectedVehicleId && !vehicleDataById.has(selectedVehicleId) && selectedVehicleFleet) {
+        const reassigned = vehicles.find((vehicle) => normalizeFleetKey(vehicle.fleetNumber) === selectedVehicleFleet);
+        if (reassigned && reassigned.id) {
+          selectedVehicleId = reassigned.id;
+        }
+      }
+
       if (selectedVehicleId && !vehicleDataById.has(selectedVehicleId)) {
         selectedVehicleId = null;
+        selectedVehicleFleet = null;
         setSidebarEmpty('Select a bus marker to inspect its service details.');
       } else if (selectedVehicleId) {
-        setSidebarVehicle(vehicleDataById.get(selectedVehicleId));
+        const selectedVehicle = vehicleDataById.get(selectedVehicleId);
+        selectedVehicleFleet = normalizeFleetKey(selectedVehicle?.fleetNumber);
+        setSidebarVehicle(selectedVehicle);
       }
       syncSelectedMarkerStyles();
       return visibleVehicleCount;
@@ -590,13 +631,18 @@ function initializeServiceOverview() {
         </article>
       `).join('');
       return `
-        <section class="service-group">
+        <section class="service-group" data-route-group="${escapeHtml(group.routeId)}">
           <header class="service-group-head">
             <div>
               <p class="brand-subtitle">Route ${escapeHtml(group.routeLabel)}</p>
               <h2>${escapeHtml(group.routeLabel)}</h2>
             </div>
-            <span class="service-count-pill">${routeVehicleCount} active</span>
+            <div class="service-group-actions">
+              <span class="service-count-pill">${routeVehicleCount} active</span>
+              <button type="button" class="service-group-toggle" aria-expanded="true" aria-label="Collapse route ${escapeHtml(group.routeLabel)}">
+                <span class="chevron">▾</span>
+              </button>
+            </div>
           </header>
           <div class="service-group-list">${routeVehicles}</div>
         </section>
@@ -620,6 +666,22 @@ function initializeServiceOverview() {
       listEl.innerHTML = '<p class="saved-empty">Unable to load active services right now.</p>';
     }
   };
+
+  listEl.addEventListener('click', (event) => {
+    const toggle = event.target.closest('.service-group-toggle');
+    if (!toggle) {
+      return;
+    }
+
+    const group = toggle.closest('.service-group');
+    if (!group) {
+      return;
+    }
+
+    const willCollapse = !group.classList.contains('is-collapsed');
+    group.classList.toggle('is-collapsed', willCollapse);
+    toggle.setAttribute('aria-expanded', willCollapse ? 'false' : 'true');
+  });
 
   refreshButton.addEventListener('click', refreshOverview);
   refreshOverview();
