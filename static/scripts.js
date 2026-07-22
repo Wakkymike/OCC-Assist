@@ -194,7 +194,7 @@ function initializeMap() {
       });
 
       vehicleStates.forEach((vehicleState, vehicleId) => {
-        if (!activeIds.has(vehicleId) && observedAtMs - vehicleState.lastFreshAtMs > staleAfterMs) {
+        if (!activeIds.has(vehicleId)) {
           removeVehicleMarker(vehicleState);
           vehicleStates.delete(vehicleId);
         }

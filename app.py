@@ -39,6 +39,7 @@ app.config['SECRET_KEY'] = os.environ.get('OCC_ASSIST_SECRET_KEY', 'change-me-be
 app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
 app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
+app.config['BODS_STALE_SECONDS'] = int(os.environ.get('OCC_ASSIST_BODS_STALE_SECONDS', '120'))
 app.config['STATIC_VERSION'] = str(int(max((BASE_DIR / 'static' / 'scripts.js').stat().st_mtime, (BASE_DIR / 'static' / 'styles.css').stat().st_mtime)))
 
 
@@ -258,6 +259,15 @@ def get_bods_feed_url() -> str | None:
     return f'https://data.bus-data.dft.gov.uk/api/v1/datafeed/{feed_id}/?{query}'
 
 
+def parse_bods_timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
     feed_url = get_bods_feed_url()
     if not feed_url:
@@ -273,6 +283,8 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
 
     root = ET.fromstring(payload)
     response_timestamp = get_xml_text(root, './/siri:VehicleMonitoringDelivery/siri:ResponseTimestamp')
+    source_time = parse_bods_timestamp(response_timestamp)
+    stale_seconds = app.config['BODS_STALE_SECONDS']
     items: list[dict[str, object]] = []
 
     for activity in root.findall('.//siri:VehicleActivity', SIRI_NAMESPACE):
@@ -295,7 +307,21 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
         )
         operator_ref = get_xml_text(journey, 'siri:OperatorRef')
         recorded_at = get_xml_text(activity, 'siri:RecordedAtTime')
+        origin_departure = get_xml_text(journey, 'siri:OriginAimedDepartureTime')
+        destination_arrival = get_xml_text(journey, 'siri:DestinationAimedArrivalTime')
         journey_ref = get_xml_text(journey, 'siri:FramedVehicleJourneyRef/siri:DatedVehicleJourneyRef')
+
+        recorded_at_time = parse_bods_timestamp(recorded_at)
+        origin_departure_time = parse_bods_timestamp(origin_departure)
+        destination_arrival_time = parse_bods_timestamp(destination_arrival)
+
+        if source_time is not None:
+            if recorded_at_time is None or (source_time - recorded_at_time).total_seconds() >= stale_seconds:
+                continue
+
+            if origin_departure_time is not None and destination_arrival_time is not None:
+                if not (origin_departure_time <= source_time <= destination_arrival_time):
+                    continue
 
         items.append(
             {
@@ -308,6 +334,8 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
                 'fleetNumber': fleet_number,
                 'operator': operator_ref,
                 'recordedAt': recorded_at,
+                'originAimedDepartureTime': origin_departure,
+                'destinationAimedArrivalTime': destination_arrival,
             }
         )
 
