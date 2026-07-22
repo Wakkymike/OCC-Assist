@@ -60,6 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeMap();
   initializeDrivingHours();
   initializeDailyOverview();
+  initializeMetrolink();
   initializeSettingsPage();
 });
 
@@ -995,6 +996,156 @@ function initializeDailyOverview() {
 
   setUpcomingVisibility(false);
   loadOverview();
+}
+
+function initializeMetrolink() {
+  const metrolinkRoot = document.querySelector('#metrolink-app');
+  const lineFilter = document.querySelector('#metrolink-line-filter');
+  const refreshButton = document.querySelector('#metrolink-refresh');
+  const statusBox = document.querySelector('#metrolink-status');
+  const kpi = document.querySelector('#metrolink-kpi');
+  const tramList = document.querySelector('#metrolink-tram-list');
+  const stationBody = document.querySelector('#metrolink-station-body');
+  const lastUpdated = document.querySelector('#metrolink-last-updated');
+
+  if (!metrolinkRoot || !lineFilter || !refreshButton || !statusBox || !kpi || !tramList || !stationBody || !lastUpdated) {
+    return;
+  }
+
+  const boardUrl = window.OCC_ASSIST.metrolinkBoardUrl;
+  if (!boardUrl) {
+    setMessage(statusBox, 'Metrolink API URL is not configured in the app.', 'error');
+    return;
+  }
+
+  const escapeHtml = (value) => String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+  let refreshTimer = null;
+
+  const formatAsTickerTime = (value) => {
+    if (!value) {
+      return 'Unknown';
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return String(value);
+    }
+    return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  const updateLineOptions = (lines) => {
+    const selected = lineFilter.value || 'all';
+    const options = ['<option value="all">All lines</option>'];
+    lines.forEach((line) => {
+      options.push(`<option value="${escapeHtml(line)}">${escapeHtml(line)}</option>`);
+    });
+    lineFilter.innerHTML = options.join('');
+
+    const target = lines.includes(selected) || selected === 'all' ? selected : 'all';
+    lineFilter.value = target;
+  };
+
+  const renderTramTicker = (trams) => {
+    if (!trams.length) {
+      tramList.innerHTML = '<p class="hours-empty">No live tram locations available right now.</p>';
+      return;
+    }
+
+    tramList.innerHTML = trams
+      .map((tram) => `
+        <article class="ticker-card" data-line="${escapeHtml(tram.line)}">
+          <span class="ticker-line">${escapeHtml(tram.line)}</span>
+          <strong>${escapeHtml(tram.towards)}</strong>
+          <p>${escapeHtml(tram.station)} <span class="ticker-sep">|</span> ${escapeHtml(tram.waitLabel)}</p>
+          <small>${escapeHtml(tram.direction)} <span class="ticker-sep">|</span> ${escapeHtml(tram.carriages)}</small>
+        </article>
+      `)
+      .join('');
+  };
+
+  const renderStations = (stations) => {
+    if (!stations.length) {
+      stationBody.innerHTML = '<tr><td colspan="5" class="hours-empty">No station arrival data available for this line.</td></tr>';
+      return;
+    }
+
+    stationBody.innerHTML = stations
+      .map((station) => {
+        const firstArrival = station.arrivals[0] || null;
+        const arrivals = station.arrivals
+          .slice(0, 4)
+          .map((arrival) => `
+            <span class="arrival-chip">
+              <span class="arrival-destination">${escapeHtml(arrival.destination)}</span>
+              <span class="arrival-wait">${escapeHtml(arrival.waitLabel)}</span>
+            </span>
+          `)
+          .join('');
+
+        return `
+          <tr>
+            <td class="station-name">${escapeHtml(station.name)}</td>
+            <td><span class="ticker-line">${escapeHtml(station.line)}</span></td>
+            <td><div class="arrival-chip-list">${arrivals}</div></td>
+            <td>${escapeHtml(firstArrival ? firstArrival.direction : '-')}</td>
+            <td>${escapeHtml(firstArrival ? firstArrival.carriages : '-')}</td>
+          </tr>
+        `;
+      })
+      .join('');
+  };
+
+  const loadMetrolink = async () => {
+    setMessage(statusBox, 'Refreshing Metrolink feed...');
+    const query = new URLSearchParams({ line: lineFilter.value || 'all' });
+
+    const response = await fetch(`${boardUrl}?${query.toString()}`, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || 'Unable to load Metrolink feed right now.');
+    }
+
+    updateLineOptions(payload.lines || []);
+    renderTramTicker(payload.tramPositions || []);
+    renderStations(payload.stations || []);
+
+    const tramCount = (payload.tramPositions || []).length;
+    const stationCount = (payload.stations || []).length;
+    kpi.textContent = `${tramCount} live trams | ${stationCount} stations`;
+    lastUpdated.textContent = `Source ${formatAsTickerTime(payload.sourceUpdated)} | Refreshed ${formatAsTickerTime(payload.refreshedAt)}`;
+    setMessage(statusBox, `Board updated for ${lineFilter.value === 'all' ? 'all lines' : lineFilter.value}.`, 'success');
+  };
+
+  const safeLoad = async () => {
+    try {
+      await loadMetrolink();
+    } catch (error) {
+      setMessage(statusBox, error.message || 'Unable to refresh Metrolink feed.', 'error');
+    }
+  };
+
+  refreshButton.addEventListener('click', () => {
+    safeLoad();
+  });
+
+  lineFilter.addEventListener('change', () => {
+    safeLoad();
+  });
+
+  safeLoad();
+  refreshTimer = window.setInterval(safeLoad, 7000);
+
+  window.addEventListener('beforeunload', () => {
+    if (refreshTimer !== null) {
+      window.clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+  });
 }
 
 function initializeSettingsPage() {
