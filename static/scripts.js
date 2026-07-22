@@ -494,13 +494,9 @@ function initializeDrivingHours() {
     }
 
     return snapshots.filter((snapshot) => {
-      const statusLabel = snapshot.status === 'breached' ? 'breached' : 'compliant';
       const haystack = [
         snapshot.driverName,
         snapshot.employeeNumber,
-        snapshot.segmentSummary,
-        statusLabel,
-        snapshot.createdAt,
       ]
         .map((item) => normalizeForSearch(item))
         .join(' ');

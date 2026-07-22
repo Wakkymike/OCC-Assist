@@ -73,33 +73,35 @@
         </div>
       </section>
 
-      <section class="hours-card">
-        <h2>Compliance Snapshot</h2>
-        <div class="hours-metrics" id="hours-metrics"></div>
-        <div class="hours-alerts" id="hours-alerts" aria-live="polite"></div>
-        <div class="snapshot-save-row">
-          <button class="btn primary compact" id="save-snapshot" type="button">Confirm And Save Snapshot</button>
-          <p class="map-note compact-note">Saved snapshots are private to your account and auto-delete after 14 days.</p>
-        </div>
-      </section>
-    </section>
+      <div class="hours-column">
+        <section class="hours-card">
+          <h2>Compliance Snapshot</h2>
+          <div class="hours-metrics" id="hours-metrics"></div>
+          <div class="hours-alerts" id="hours-alerts" aria-live="polite"></div>
+          <div class="snapshot-save-row">
+            <button class="btn primary compact" id="save-snapshot" type="button">Confirm And Save Snapshot</button>
+            <p class="map-note compact-note">Saved snapshots are private to your account and auto-delete after 14 days.</p>
+          </div>
+        </section>
 
-    <section class="hours-card saved-snapshots-card" aria-labelledby="saved-snapshots-title">
-      <div class="section-title-row">
-        <h2 id="saved-snapshots-title">Saved Snapshots (Last 14 Days)</h2>
-        <p class="map-note compact-note" id="saved-summary">No snapshots saved yet.</p>
+        <section class="hours-card saved-snapshots-card" aria-labelledby="saved-snapshots-title">
+          <div class="section-title-row">
+            <h2 id="saved-snapshots-title">Saved Snapshots (Last 14 Days)</h2>
+            <p class="map-note compact-note" id="saved-summary">No snapshots saved yet.</p>
+          </div>
+          <div class="saved-search-row">
+            <label for="snapshot-search" class="saved-search-label">Search your snapshots</label>
+            <input
+              id="snapshot-search"
+              class="saved-search-input"
+              type="search"
+              placeholder="Search by driver name or employee number"
+              autocomplete="off"
+            />
+          </div>
+          <div id="saved-snapshots" class="saved-snapshots-list" aria-live="polite"></div>
+        </section>
       </div>
-      <div class="saved-search-row">
-        <label for="snapshot-search" class="saved-search-label">Search your snapshots</label>
-        <input
-          id="snapshot-search"
-          class="saved-search-input"
-          type="search"
-          placeholder="Search by driver, employee number, segment text, or status"
-          autocomplete="off"
-        />
-      </div>
-      <div id="saved-snapshots" class="saved-snapshots-list" aria-live="polite"></div>
     </section>
   </section>
 {% endblock %}

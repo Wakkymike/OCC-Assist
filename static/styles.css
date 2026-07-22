@@ -526,6 +526,13 @@ body.driving-hours-active .shell {
   min-height: 0;
 }
 
+.hours-column {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+}
+
 .entry-card {
   display: grid;
   grid-template-rows: auto auto auto auto 1fr;
@@ -563,6 +570,8 @@ body.driving-hours-active .shell {
 
 .saved-snapshots-card {
   min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
 }
 
 .saved-search-row {
@@ -776,6 +785,10 @@ body.driving-hours-active .shell {
   .compact-fields,
   .saved-head {
     grid-template-columns: 1fr;
+  }
+
+  .hours-column {
+    grid-template-rows: auto;
   }
 
   .tight-scroll,
