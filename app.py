@@ -31,6 +31,7 @@ PAGE_PERMISSIONS = {
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('OCC_ASSIST_SECRET_KEY', 'change-me-before-production')
+app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
 
 
 def get_db() -> sqlite3.Connection:
@@ -165,6 +166,7 @@ def inject_user_context() -> dict[str, object]:
     user = get_current_user()
     return {
         'current_user': user,
+        'mapbox_token': app.config['MAPBOX_TOKEN'],
         'permissions_map': PERMISSIONS,
         'page_permissions': PAGE_PERMISSIONS,
     }
