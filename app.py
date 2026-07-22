@@ -8,7 +8,7 @@ from functools import wraps
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,7 @@ SUPERADMIN_EMAIL = os.environ.get('OCC_ASSIST_SUPERADMIN_EMAIL', 'michael.dodswo
 SUPERADMIN_PASSWORD = os.environ.get('OCC_ASSIST_SUPERADMIN_PASSWORD')
 PERMISSIONS = {
     'live_updates': 'Daily overview',
+    'metrolink': 'Metrolink',
     'tracking': 'Tracking',
     'driving_hours': 'Driving hours',
     'user_management': 'User management',
@@ -30,6 +31,7 @@ PERMISSIONS = {
 }
 PAGE_PERMISSIONS = {
     'live_updates': 'live_updates',
+    'metrolink': 'metrolink',
     'tracking': 'tracking',
     'driving_hours': 'driving_hours',
     'users': 'user_management',
@@ -44,6 +46,8 @@ app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
 app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
 app.config['BODS_STALE_SECONDS'] = int(os.environ.get('OCC_ASSIST_BODS_STALE_SECONDS', '120'))
+app.config['TFGM_METROLINK_URL'] = os.environ.get('OCC_ASSIST_TFGM_METROLINK_URL', 'https://api.tfgm.com/odata/Metrolinks')
+app.config['TFGM_API_KEY'] = os.environ.get('OCC_ASSIST_TFGM_API_KEY', '')
 app.config['STATIC_VERSION'] = str(int(max((BASE_DIR / 'static' / 'scripts.js').stat().st_mtime, (BASE_DIR / 'static' / 'styles.css').stat().st_mtime)))
 
 
@@ -425,6 +429,12 @@ def daily_overview_upcoming_shifts():
 @login_required('tracking')
 def tracking():
     return render_template('tracking.html')
+
+
+@app.get('/metrolink')
+@login_required('metrolink')
+def metrolink_page():
+    return render_template('metrolink.html')
 
 
 def get_xml_text(node: ET.Element | None, path: str) -> str:
@@ -936,6 +946,177 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
     return items, response_timestamp
 
 
+def parse_wait_minutes(value: str) -> int | None:
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return None
+    if cleaned in {'due', 'arriving', 'departing'}:
+        return 0
+
+    digits = ''.join(character for character in cleaned if character.isdigit() or character == '-')
+    if not digits:
+        return None
+    try:
+        return max(0, int(digits))
+    except ValueError:
+        return None
+
+
+def build_wait_label(wait_raw: str, wait_minutes: int | None, status: str) -> str:
+    if wait_minutes is None:
+        if status:
+            return status
+        return wait_raw or 'Due'
+    if wait_minutes <= 0:
+        return 'Due'
+    return f'{wait_minutes} min'
+
+
+def fetch_metrolink_feed() -> list[dict[str, object]]:
+    api_key = str(app.config.get('TFGM_API_KEY') or '').strip()
+    request_url = str(app.config.get('TFGM_METROLINK_URL') or '').strip()
+    if not api_key:
+        raise RuntimeError('Metrolink API key is not configured. Set OCC_ASSIST_TFGM_API_KEY on the server.')
+    if not request_url:
+        raise RuntimeError('Metrolink API endpoint is not configured.')
+
+    request_object = Request(
+        request_url,
+        headers={
+            'Accept': 'application/json',
+            'Ocp-Apim-Subscription-Key': api_key,
+        },
+    )
+
+    try:
+        with urlopen(request_object, timeout=20) as response:
+            payload = response.read().decode('utf-8', errors='replace')
+            parsed = json.loads(payload)
+    except HTTPError as error:
+        if error.code in {401, 403}:
+            raise RuntimeError('Metrolink API key is invalid or lacks permission.') from error
+        raise RuntimeError(f'Metrolink API returned HTTP {error.code}.') from error
+    except URLError as error:
+        raise RuntimeError('Metrolink API is not reachable right now.') from error
+    except json.JSONDecodeError as error:
+        raise RuntimeError('Metrolink API returned invalid JSON data.') from error
+
+    rows = parsed.get('value') if isinstance(parsed, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError('Metrolink API response format was unexpected.')
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def build_metrolink_board(rows: list[dict[str, object]], selected_line: str) -> dict[str, object]:
+    normalized_line = selected_line.strip().lower()
+    all_lines = sorted(
+        {
+            str(row.get('Line') or '').strip()
+            for row in rows
+            if str(row.get('Line') or '').strip()
+        }
+    )
+
+    filtered_rows = rows
+    if normalized_line and normalized_line != 'all':
+        filtered_rows = [
+            row for row in rows
+            if str(row.get('Line') or '').strip().lower() == normalized_line
+        ]
+
+    station_map: dict[str, dict[str, object]] = {}
+    tram_positions: list[dict[str, object]] = []
+    source_updates: list[str] = []
+
+    for row in filtered_rows:
+        line_name = str(row.get('Line') or '').strip() or 'Unknown'
+        station_name = str(row.get('StationLocation') or '').strip() or 'Unknown station'
+        direction = str(row.get('Direction') or '').strip() or 'Unknown'
+        atco_code = str(row.get('AtcoCode') or '').strip() or 'unknown'
+        board_message = str(row.get('MessageBoard') or '').strip()
+        last_updated = str(row.get('LastUpdated') or '').strip()
+        if last_updated:
+            source_updates.append(last_updated)
+
+        station_entry = station_map.setdefault(
+            station_name,
+            {
+                'name': station_name,
+                'line': line_name,
+                'arrivals': [],
+                'messageBoard': board_message,
+                'lastUpdated': last_updated,
+            },
+        )
+
+        for index in range(4):
+            destination = str(row.get(f'Dest{index}') or '').strip()
+            if not destination:
+                continue
+
+            status = str(row.get(f'Status{index}') or '').strip()
+            wait_raw = str(row.get(f'Wait{index}') or '').strip()
+            carriages = str(row.get(f'Carriages{index}') or '').strip() or 'Single'
+            wait_minutes = parse_wait_minutes(wait_raw)
+            wait_label = build_wait_label(wait_raw, wait_minutes, status)
+
+            arrival = {
+                'destination': destination,
+                'waitLabel': wait_label,
+                'waitMinutes': wait_minutes,
+                'status': status,
+                'carriages': carriages,
+                'direction': direction,
+                'line': line_name,
+            }
+            station_entry['arrivals'].append(arrival)
+
+            tram_positions.append(
+                {
+                    'id': f"{atco_code}-{direction}-{index}-{destination}-{wait_label}",
+                    'line': line_name,
+                    'station': station_name,
+                    'towards': destination,
+                    'waitLabel': wait_label,
+                    'waitMinutes': wait_minutes,
+                    'status': status,
+                    'carriages': carriages,
+                    'direction': direction,
+                }
+            )
+
+    def wait_sort_key(item: dict[str, object]) -> tuple[int, str]:
+        wait_minutes = item.get('waitMinutes')
+        if isinstance(wait_minutes, int):
+            return (wait_minutes, str(item.get('destination') or ''))
+        return (9999, str(item.get('destination') or ''))
+
+    stations = []
+    for station in station_map.values():
+        arrivals = list(station['arrivals'])
+        arrivals.sort(key=wait_sort_key)
+        stations.append(
+            {
+                'name': station['name'],
+                'line': station['line'],
+                'messageBoard': station['messageBoard'],
+                'lastUpdated': station['lastUpdated'],
+                'arrivals': arrivals[:8],
+            }
+        )
+
+    stations.sort(key=lambda station: str(station['name']).lower())
+    tram_positions.sort(key=lambda tram: wait_sort_key(tram))
+
+    return {
+        'lines': all_lines,
+        'selectedLine': selected_line if selected_line else 'all',
+        'stations': stations,
+        'tramPositions': tram_positions[:140],
+        'sourceUpdated': max(source_updates) if source_updates else '',
+    }
+
+
 @app.get('/api/tracking/vehicles')
 @login_required('tracking')
 def tracking_vehicles():
@@ -949,6 +1130,30 @@ def tracking_vehicles():
             'ok': True,
             'vehicles': vehicles,
             'sourceTimestamp': source_timestamp,
+            'refreshedAt': datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.get('/api/metrolink/board')
+@login_required('metrolink')
+def metrolink_board():
+    selected_line = str(request.args.get('line', 'all')).strip()
+
+    try:
+        rows = fetch_metrolink_feed()
+        board = build_metrolink_board(rows, selected_line)
+    except RuntimeError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 503
+
+    return jsonify(
+        {
+            'ok': True,
+            'lines': board['lines'],
+            'selectedLine': board['selectedLine'],
+            'stations': board['stations'],
+            'tramPositions': board['tramPositions'],
+            'sourceUpdated': board['sourceUpdated'],
             'refreshedAt': datetime.now(timezone.utc).isoformat(),
         }
     )
