@@ -1,0 +1,47 @@
+{% extends 'base.html' %}
+
+{% block title %}Users{% endblock %}
+
+{% block content %}
+  <section class="content-panel fullwidth">
+    <div class="panel-head">
+      <p class="brand-subtitle">Access management</p>
+      <h1>Users</h1>
+    </div>
+    <p class="section-copy">Create users, review access, and adjust page permissions from one place.</p>
+
+    <section class="admin-layout">
+      <form id="user-form" class="admin-card" novalidate>
+        <h2>Add User</h2>
+        <div class="field">
+          <label for="new-user-email">Email address</label>
+          <input type="email" id="new-user-email" name="email" placeholder="name@example.com" required />
+        </div>
+        <div class="field">
+          <label for="new-user-password">Temporary password</label>
+          <input type="password" id="new-user-password" name="password" placeholder="At least 8 characters" minlength="8" required />
+        </div>
+        <fieldset class="permission-grid">
+          <legend>Starting permissions</legend>
+          {% for permission_key, label in permissions_map.items() %}
+            <label class="permission-option">
+              <input type="checkbox" name="permission" value="{{ permission_key }}" {% if permission_key == 'admin_privileges' and not current_user.is_superadmin and not current_user.permissions.admin_privileges %}disabled{% endif %} />
+              <span>{{ label }}</span>
+            </label>
+          {% endfor %}
+        </fieldset>
+        <button class="btn primary" type="submit">Create user</button>
+        <div id="user-form-message" class="message" aria-live="polite"></div>
+      </form>
+
+      <section class="admin-card">
+        <div class="section-row">
+          <h2>Current Users</h2>
+          <button class="btn secondary compact" type="button" id="refresh-users">Refresh</button>
+        </div>
+        <div id="users-message" class="message" aria-live="polite"></div>
+        <div id="users-list" class="users-list"></div>
+      </section>
+    </section>
+  </section>
+{% endblock %}

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}OCC Assist{% endblock %}</title>
+    {% block head_extras %}{% endblock %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <script>
+      window.OCC_ASSIST = {
+        logoutUrl: {{ url_for('logout') | tojson }},
+        sessionUrl: {{ url_for('session_info') | tojson }},
+        usersApiUrl: {{ url_for('list_users') | tojson }},
+        createUserUrl: {{ url_for('create_user') | tojson }},
+        permissionsBaseUrl: '/api/users',
+        currentUser: {{ current_user | tojson }},
+        availablePages: {
+          liveUpdates: {{ url_for('live_updates') | tojson }},
+          tracking: {{ url_for('tracking') | tojson }},
+          drivingHours: {{ url_for('driving_hours') | tojson }},
+          users: {{ url_for('users_page') | tojson }}
+        }
+      };
+    </script>
+    <script defer src="{{ url_for('static', filename='scripts.js') }}"></script>
+  </head>
+  <body>
+    <div class="page-background" aria-hidden="true"></div>
+    {% if current_user %}
+      <header class="page-header">
+        <a class="brand-link" href="{{ url_for('live_updates') }}">OCC Assist</a>
+        <nav class="top-nav">
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.live_updates %}
+            <a href="{{ url_for('live_updates') }}">Live Updates</a>
+          {% endif %}
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
+            <a href="{{ url_for('tracking') }}">Tracking</a>
+          {% endif %}
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.driving_hours %}
+            <a href="{{ url_for('driving_hours') }}">Driving Hours</a>
+          {% endif %}
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.user_management %}
+            <a href="{{ url_for('users_page') }}">Users</a>
+          {% endif %}
+        </nav>
+        <button class="btn nav-button" type="button" data-action="logout">Sign out</button>
+      </header>
+    {% endif %}
+
+    <main class="page shell">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
