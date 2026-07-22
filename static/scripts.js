@@ -810,6 +810,7 @@ function initializeDailyOverview() {
   const toggleUpcomingButton = document.querySelector('#toggle-upcoming');
   const upcomingControls = document.querySelector('#upcoming-controls');
   const upcomingScope = document.querySelector('#upcoming-scope');
+  const upcomingIncludeRest = document.querySelector('#upcoming-include-rest');
   const upcomingPrev = document.querySelector('#upcoming-prev');
   const upcomingNext = document.querySelector('#upcoming-next');
   const upcomingRefresh = document.querySelector('#upcoming-refresh');
@@ -826,7 +827,7 @@ function initializeDailyOverview() {
   if (
     !overviewRoot || !refreshButton || !overviewMessage || !currentStatus || !currentWindow || !currentLocation
     || !nextStatus || !nextWindow || !nextLocation || !toggleUpcomingButton || !upcomingControls
-    || !upcomingScope || !upcomingPrev || !upcomingNext || !upcomingRefresh || !upcomingPeriod
+    || !upcomingScope || !upcomingIncludeRest || !upcomingPrev || !upcomingNext || !upcomingRefresh || !upcomingPeriod
     || !upcomingMessage || !upcomingList
   ) {
     return;
@@ -922,6 +923,7 @@ function initializeDailyOverview() {
     const query = new URLSearchParams({
       scope: upcomingScope.value,
       offset: String(upcomingOffset),
+      includeRestDays: upcomingIncludeRest.checked ? '1' : '0',
     });
 
     const response = await fetch(`${window.OCC_ASSIST.overviewUpcomingUrl}?${query.toString()}`, {
@@ -970,6 +972,10 @@ function initializeDailyOverview() {
 
   upcomingScope.addEventListener('change', () => {
     upcomingOffset = 0;
+    loadUpcomingShifts();
+  });
+
+  upcomingIncludeRest.addEventListener('change', () => {
     loadUpcomingShifts();
   });
 

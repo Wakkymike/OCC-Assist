@@ -521,6 +521,19 @@ body::before {
   margin-top: 10px;
 }
 
+.upcoming-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #cdd7ed;
+  font-size: 0.9rem;
+  margin: 0 6px 8px 0;
+}
+
+.upcoming-checkbox input {
+  accent-color: var(--accent);
+}
+
 .upcoming-controls[hidden],
 #upcoming-period[hidden],
 #upcoming-message[hidden],

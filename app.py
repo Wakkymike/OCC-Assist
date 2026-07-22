@@ -239,7 +239,7 @@ def prepare_database() -> None:
 @app.get('/')
 def index():
     if get_current_user() is not None:
-        return redirect(url_for('live_updates'))
+        return redirect(url_for('daily_overview'))
     return render_template('index.html')
 
 
@@ -258,7 +258,7 @@ def login():
 
     session.clear()
     session['user_id'] = user['id']
-    return jsonify({'ok': True, 'redirect': url_for('live_updates')})
+    return jsonify({'ok': True, 'redirect': url_for('daily_overview')})
 
 
 @app.post('/api/logout')
@@ -275,10 +275,15 @@ def session_info():
     return jsonify({'authenticated': True, 'user': user})
 
 
-@app.get('/live-updates')
+@app.get('/daily-overview')
 @login_required('live_updates')
-def live_updates():
-    return render_template('live-updates.html')
+def daily_overview():
+    return render_template('daily-overview.html')
+
+
+@app.get('/live-updates')
+def live_updates_legacy_redirect():
+    return redirect(url_for('daily_overview'))
 
 
 @app.get('/settings')
@@ -672,6 +677,20 @@ def serialize_shift_event(event: dict[str, object]) -> dict[str, object]:
         'endIso': event['end'].isoformat(),
         'windowLabel': f"{start_local.strftime('%a %d %b %H:%M')} - {end_local.strftime('%H:%M')}",
     }
+    
+def is_rest_day_or_holiday_event(event: dict[str, object]) -> bool:
+    summary = str(event.get('summary') or '').lower()
+    location = str(event.get('location') or '').lower()
+    text = f'{summary} {location}'
+    keywords = [
+        'rest day',
+        'restday',
+        'holiday',
+        'annual leave',
+        'day off',
+        'dayoff',
+    ]
+    return any(keyword in text for keyword in keywords)
 
 
 def parse_clock_to_minutes(value: str) -> int | None:
@@ -698,6 +717,13 @@ def format_duration(minutes: int) -> str:
 def format_duration_compact(minutes: int) -> str:
     safe = max(0, int(minutes))
     hours = safe // 60
+    
+        include_rest_days = str(request.args.get('includeRestDays', '1')).strip().lower() not in {
+            '0',
+            'false',
+            'no',
+            'off',
+        }
     remainder = safe % 60
     if hours == 0:
         return f'{remainder}m'
@@ -719,6 +745,9 @@ def validate_segments(payload_segments: object) -> list[dict[str, object]]:
         start = parse_clock_to_minutes(str(item.get('start', '')).strip())
         end = parse_clock_to_minutes(str(item.get('end', '')).strip())
         if start is None or end is None or end <= start:
+    
+        if not include_rest_days:
+            filtered_events = [event for event in filtered_events if not is_rest_day_or_holiday_event(event)]
             raise ValueError('Each segment must have valid start/end times on the same day.')
 
         validated.append(

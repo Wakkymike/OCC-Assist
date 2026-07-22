@@ -31,10 +31,10 @@
     <div class="page-background" aria-hidden="true"></div>
     {% if current_user %}
       <header class="page-header">
-        <a class="brand-link" href="{{ url_for('live_updates') }}">OCC Assist</a>
+        <a class="brand-link" href="{{ url_for('daily_overview') }}">OCC Assist</a>
         <nav class="top-nav">
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.live_updates %}
-            <a href="{{ url_for('live_updates') }}">Daily Overview</a>
+            <a href="{{ url_for('daily_overview') }}">Daily Overview</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
