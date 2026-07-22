@@ -399,6 +399,14 @@ def daily_overview_upcoming_shifts():
         event for event in all_events
         if event['end'] >= now_utc and event['start'] < period_end_utc and event['end'] > period_start_utc
     ]
+    include_rest_days = str(request.args.get('includeRestDays', '1')).strip().lower() not in {
+        '0',
+        'false',
+        'no',
+        'off',
+    }
+    if not include_rest_days:
+        filtered_events = [event for event in filtered_events if not is_rest_day_or_holiday_event(event)]
 
     return jsonify(
         {
@@ -717,13 +725,6 @@ def format_duration(minutes: int) -> str:
 def format_duration_compact(minutes: int) -> str:
     safe = max(0, int(minutes))
     hours = safe // 60
-    
-        include_rest_days = str(request.args.get('includeRestDays', '1')).strip().lower() not in {
-            '0',
-            'false',
-            'no',
-            'off',
-        }
     remainder = safe % 60
     if hours == 0:
         return f'{remainder}m'
@@ -745,9 +746,6 @@ def validate_segments(payload_segments: object) -> list[dict[str, object]]:
         start = parse_clock_to_minutes(str(item.get('start', '')).strip())
         end = parse_clock_to_minutes(str(item.get('end', '')).strip())
         if start is None or end is None or end <= start:
-    
-        if not include_rest_days:
-            filtered_events = [event for event in filtered_events if not is_rest_day_or_holiday_event(event)]
             raise ValueError('Each segment must have valid start/end times on the same day.')
 
         validated.append(
