@@ -448,13 +448,19 @@ body.driving-hours-active {
   overflow: hidden;
 }
 
+body.driving-hours-active .shell {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
 .compact-hours-panel {
-  max-height: calc(100vh - 90px);
+  height: calc(100vh - 126px);
+  max-height: calc(100vh - 126px);
   overflow: hidden;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   gap: 14px;
-  padding: 20px;
+  padding: 14px;
 }
 
 .compact-head {
@@ -551,7 +557,7 @@ body.driving-hours-active {
 
 .saved-snapshots-list {
   margin-top: 10px;
-  max-height: 160px;
+  max-height: 150px;
   overflow: auto;
   display: grid;
   gap: 10px;
