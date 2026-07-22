@@ -3,14 +3,64 @@
 {% block title %}Driving Hours{% endblock %}
 
 {% block content %}
-  <section class="content-panel">
+  <section class="content-panel fullwidth">
     <div class="panel-head">
       <p class="brand-subtitle">Driver compliance</p>
       <h1>Driving Hours</h1>
     </div>
-    <p class="section-copy">This page is ready for your driving hours reporting and analytics content.</p>
-    <div class="placeholder-card">
-      <p>Hours tracking and log data will be integrated here in a future update.</p>
-    </div>
+    <p class="section-copy">Log driving and break segments to calculate daily totals and detect GB domestic rules breaches instantly.</p>
+
+    <section class="hours-layout" id="driving-hours-app">
+      <form id="segment-form" class="hours-card" novalidate>
+        <h2>Add Segment</h2>
+        <div class="hours-fields">
+          <div class="field">
+            <label for="segment-type">Segment type</label>
+            <select id="segment-type" name="type" required>
+              <option value="driving">Driving</option>
+              <option value="break">Break</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="segment-start">Start time</label>
+            <input id="segment-start" name="start" type="time" required />
+          </div>
+          <div class="field">
+            <label for="segment-end">End time</label>
+            <input id="segment-end" name="end" type="time" required />
+          </div>
+        </div>
+        <button class="btn primary" type="submit">Add Segment</button>
+        <div id="segment-message" class="message" aria-live="polite"></div>
+      </form>
+
+      <section class="hours-card">
+        <div class="section-row">
+          <h2>Logged Segments</h2>
+          <button class="btn secondary compact" id="clear-segments" type="button">Clear All</button>
+        </div>
+        <div class="hours-table-wrap">
+          <table class="hours-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Duration</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="segment-list"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="hours-card full-span">
+        <h2>Compliance Snapshot</h2>
+        <div class="hours-metrics" id="hours-metrics"></div>
+        <div class="hours-alerts" id="hours-alerts" aria-live="polite"></div>
+        <p class="map-note">Rules applied: GB domestic bus/coach limits including 10h daily driving, 16h spreadover, and mandatory break conditions.</p>
+      </section>
+    </section>
   </section>
 {% endblock %}
