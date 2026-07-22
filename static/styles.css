@@ -445,17 +445,25 @@ body::before {
 }
 
 body.driving-hours-active {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
+body.driving-hours-active .page {
+  min-height: 0;
+}
+
 body.driving-hours-active .shell {
+  height: 100%;
   padding-top: 14px;
   padding-bottom: 14px;
 }
 
 .compact-hours-panel {
-  height: calc(100vh - 126px);
-  max-height: calc(100vh - 126px);
+  height: 100%;
+  max-height: 100%;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
@@ -545,14 +553,34 @@ body.driving-hours-active .shell {
   margin-top: 10px;
   display: grid;
   gap: 8px;
-  position: relative;
-  z-index: 3;
 }
 
 .saved-snapshots-card {
   min-height: 0;
-  position: relative;
-  z-index: 1;
+}
+
+.saved-search-row {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.saved-search-label {
+  font-size: 0.82rem;
+  color: #cdd7ed;
+}
+
+.saved-search-input {
+  width: 100%;
+  padding: 10px 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+}
+
+.saved-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
 }
 
 .saved-snapshots-list {
@@ -728,6 +756,7 @@ body.driving-hours-active .shell {
   }
 
   .compact-hours-panel {
+    height: auto;
     max-height: none;
     overflow: visible;
     grid-template-rows: auto;

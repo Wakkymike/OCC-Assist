@@ -277,13 +277,14 @@ function initializeDrivingHours() {
   const saveSnapshotButton = document.querySelector('#save-snapshot');
   const savedSnapshotsPanel = document.querySelector('#saved-snapshots');
   const savedSummary = document.querySelector('#saved-summary');
+  const snapshotSearchInput = document.querySelector('#snapshot-search');
   const activeUserLabel = document.querySelector('#active-user-label');
   const driverNameInput = document.querySelector('#driver-name');
   const employeeNumberInput = document.querySelector('#employee-number');
 
   if (
     !app || !segmentForm || !segmentList || !clearButton || !metricsPanel || !alertsPanel || !saveSnapshotButton
-    || !savedSnapshotsPanel || !savedSummary || !driverNameInput || !employeeNumberInput
+    || !savedSnapshotsPanel || !savedSummary || !snapshotSearchInput || !driverNameInput || !employeeNumberInput
   ) {
     return;
   }
@@ -302,6 +303,8 @@ function initializeDrivingHours() {
 
   let segments = [];
   let snapshots = [];
+
+  const normalizeForSearch = (value) => String(value || '').toLowerCase().trim();
 
   const escapeHtml = (value) => {
     return String(value)
@@ -482,6 +485,27 @@ function initializeDrivingHours() {
       .join('');
   };
 
+  const getFilteredSnapshots = () => {
+    const query = normalizeForSearch(snapshotSearchInput.value);
+    if (!query) {
+      return snapshots;
+    }
+
+    return snapshots.filter((snapshot) => {
+      const statusLabel = snapshot.status === 'breached' ? 'breached' : 'compliant';
+      const haystack = [
+        snapshot.driverName,
+        snapshot.employeeNumber,
+        snapshot.segmentSummary,
+        statusLabel,
+        snapshot.createdAt,
+      ]
+        .map((item) => normalizeForSearch(item))
+        .join(' ');
+      return haystack.includes(query);
+    });
+  };
+
   const renderSavedSnapshots = () => {
     if (!snapshots.length) {
       savedSummary.textContent = 'No snapshots saved yet.';
@@ -489,8 +513,21 @@ function initializeDrivingHours() {
       return;
     }
 
-    savedSummary.textContent = `${snapshots.length} snapshot${snapshots.length === 1 ? '' : 's'} stored.`;
-    savedSnapshotsPanel.innerHTML = snapshots
+    const filteredSnapshots = getFilteredSnapshots();
+    const totalCount = snapshots.length;
+    const filteredCount = filteredSnapshots.length;
+    const hasQuery = normalizeForSearch(snapshotSearchInput.value).length > 0;
+
+    savedSummary.textContent = hasQuery
+      ? `${filteredCount} of ${totalCount} snapshot${totalCount === 1 ? '' : 's'} shown.`
+      : `${totalCount} snapshot${totalCount === 1 ? '' : 's'} stored.`;
+
+    if (!filteredSnapshots.length) {
+      savedSnapshotsPanel.innerHTML = '<p class="hours-empty">No snapshots match your search.</p>';
+      return;
+    }
+
+    savedSnapshotsPanel.innerHTML = filteredSnapshots
       .map((snapshot) => {
         const timestamp = snapshot.createdAtEpoch
           ? new Date(snapshot.createdAtEpoch * 1000)
@@ -614,6 +651,10 @@ function initializeDrivingHours() {
     segments = [];
     renderSegments();
     setMessage(formMessage, 'All segments cleared.', 'success');
+  });
+
+  snapshotSearchInput.addEventListener('input', () => {
+    renderSavedSnapshots();
   });
 
   saveSnapshotButton.addEventListener('click', async () => {
