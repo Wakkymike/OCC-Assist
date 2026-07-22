@@ -73,7 +73,7 @@ function initializeMap() {
   const mapContainer = document.querySelector('#map');
   const mapStatus = document.querySelector('#map-status');
   const boltonCenter = [-2.428219, 53.576864];
-  const staleAfterMs = 30_000;
+  const staleAfterMs = 120_000;
   if (!mapContainer || typeof mapboxgl === 'undefined') {
     return;
   }
@@ -164,13 +164,7 @@ function initializeMap() {
         }
 
         const observedAtMs = Date.parse(payload.sourceTimestamp || payload.refreshedAt) || Date.now();
-        const activeVehicles = (payload.vehicles || []).filter((vehicle) => {
-          const recordedAtMs = Date.parse(vehicle.recordedAt || '');
-          if (Number.isNaN(recordedAtMs)) {
-            return true;
-          }
-          return observedAtMs - recordedAtMs <= staleAfterMs;
-        });
+        const activeVehicles = payload.vehicles || [];
 
         renderVehicles(activeVehicles, observedAtMs);
         const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
