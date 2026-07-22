@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -533,15 +533,7 @@ def parse_ical_events(content: str) -> list[dict[str, object]]:
 
 
 def fetch_rotacloud_shift_overview(ical_url: str) -> dict[str, object]:
-    try:
-        with urlopen(ical_url, timeout=20) as response:
-            payload = response.read().decode('utf-8', errors='replace')
-    except HTTPError as error:
-        raise RuntimeError(f'RotaCloud iCal link returned HTTP {error.code}.') from error
-    except URLError as error:
-        raise RuntimeError('Unable to reach the RotaCloud iCal link right now.') from error
-
-    events = sorted(parse_ical_events(payload), key=lambda event: event['start'])
+    events = fetch_rotacloud_events(ical_url)
     now_utc = datetime.now(timezone.utc)
 
     current_shift = None
@@ -572,6 +564,54 @@ def fetch_rotacloud_shift_overview(ical_url: str) -> dict[str, object]:
     return {
         'currentShift': serialize_shift(current_shift),
         'nextShift': serialize_shift(next_shift),
+    }
+
+def fetch_rotacloud_events(ical_url: str) -> list[dict[str, object]]:
+    try:
+        with urlopen(ical_url, timeout=20) as response:
+            payload = response.read().decode('utf-8', errors='replace')
+    except HTTPError as error:
+        raise RuntimeError(f'RotaCloud iCal link returned HTTP {error.code}.') from error
+    except URLError as error:
+        raise RuntimeError('Unable to reach the RotaCloud iCal link right now.') from error
+
+    return sorted(parse_ical_events(payload), key=lambda event: event['start'])
+
+
+def add_months(base: datetime, months: int) -> datetime:
+    year = base.year + ((base.month - 1 + months) // 12)
+    month = ((base.month - 1 + months) % 12) + 1
+    return base.replace(year=year, month=month, day=1)
+
+
+def get_period_bounds(scope: str, offset: int) -> tuple[datetime, datetime, str]:
+    now_local = datetime.now(LONDON_TZ)
+    if scope == 'month':
+        month_start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        period_start = add_months(month_start, offset)
+        period_end = add_months(period_start, 1)
+        label = period_start.strftime('%B %Y')
+        return period_start, period_end, label
+
+    # Week starts Sunday. Python weekday: Monday=0 ... Sunday=6.
+    days_since_sunday = (now_local.weekday() + 1) % 7
+    week_start = (now_local.replace(hour=0, minute=0, second=0, microsecond=0) -
+                  timedelta(days=days_since_sunday))
+    period_start = week_start + timedelta(weeks=offset)
+    period_end = period_start + timedelta(days=7)
+    label = f"{period_start.strftime('%d %b %Y')} - {(period_end - timedelta(days=1)).strftime('%d %b %Y')}"
+    return period_start, period_end, label
+
+
+def serialize_shift_event(event: dict[str, object]) -> dict[str, object]:
+    start_local = event['start'].astimezone(LONDON_TZ)
+    end_local = event['end'].astimezone(LONDON_TZ)
+    return {
+        'summary': str(event.get('summary') or 'Shift'),
+        'location': str(event.get('location') or ''),
+        'startIso': event['start'].isoformat(),
+        'endIso': event['end'].isoformat(),
+        'windowLabel': f"{start_local.strftime('%a %d %b %H:%M')} - {end_local.strftime('%H:%M')}",
     }
 
 
@@ -860,6 +900,65 @@ def list_driving_snapshots():
             created_at,
             created_at_epoch
         FROM driving_snapshots
+
+
+@app.get('/api/overview/upcoming-shifts')
+@login_required('live_updates')
+def daily_overview_upcoming_shifts():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    ical_url = get_user_rotacloud_ical_url(int(user['id']))
+    if not ical_url:
+        return jsonify(
+            {
+                'ok': True,
+                'configured': False,
+                'scope': 'week',
+                'offset': 0,
+                'periodLabel': '',
+                'shifts': [],
+                'message': 'No RotaCloud iCal link configured yet.',
+            }
+        )
+
+    scope = str(request.args.get('scope', 'week')).strip().lower()
+    if scope not in {'week', 'month'}:
+        scope = 'week'
+
+    try:
+        offset = int(request.args.get('offset', '0'))
+    except ValueError:
+        offset = 0
+    offset = max(-12, min(24, offset))
+
+    period_start_local, period_end_local, period_label = get_period_bounds(scope, offset)
+    period_start_utc = period_start_local.astimezone(timezone.utc)
+    period_end_utc = period_end_local.astimezone(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
+
+    try:
+        all_events = fetch_rotacloud_events(ical_url)
+    except RuntimeError as error:
+        return jsonify({'ok': False, 'configured': True, 'message': str(error)}), 503
+
+    filtered_events = [
+        event for event in all_events
+        if event['end'] >= now_utc and event['start'] < period_end_utc and event['end'] > period_start_utc
+    ]
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'scope': scope,
+            'offset': offset,
+            'periodLabel': period_label,
+            'shifts': [serialize_shift_event(event) for event in filtered_events],
+            'weekStartsOn': 'Sunday',
+        }
+    )
         WHERE user_id = ?
         ORDER BY created_at_epoch DESC
         ''',

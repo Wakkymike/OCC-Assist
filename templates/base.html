@@ -20,6 +20,7 @@
         settingsRotacloudUrl: {{ url_for('get_rotacloud_setting') | tojson }},
         updateSettingsRotacloudUrl: {{ url_for('update_rotacloud_setting') | tojson }},
         overviewShiftsUrl: {{ url_for('daily_overview_shifts') | tojson }},
+        overviewUpcomingUrl: {{ url_for('daily_overview_upcoming_shifts') | tojson }},
         settingsPageUrl: {{ url_for('settings_page') | tojson }}
         {% endif %}
       };

@@ -30,6 +30,30 @@
           <p id="next-shift-location" class="overview-location"></p>
         </article>
       </div>
+
+      <section class="overview-upcoming" aria-label="Upcoming shifts">
+        <div class="section-row">
+          <h2>Upcoming Shifts</h2>
+          <button id="toggle-upcoming" class="btn secondary compact" type="button">Show Upcoming Shifts</button>
+        </div>
+
+        <div id="upcoming-controls" class="upcoming-controls" hidden>
+          <label class="field compact-field" for="upcoming-scope">
+            <span>View by</span>
+            <select id="upcoming-scope" name="upcoming-scope">
+              <option value="week">Week (Sun-Sat)</option>
+              <option value="month">Month</option>
+            </select>
+          </label>
+          <button id="upcoming-prev" class="btn secondary compact" type="button">Previous</button>
+          <button id="upcoming-next" class="btn secondary compact" type="button">Next</button>
+          <button id="upcoming-refresh" class="btn secondary compact" type="button">Refresh</button>
+        </div>
+
+        <p id="upcoming-period" class="overview-window" hidden></p>
+        <div id="upcoming-message" class="message" hidden></div>
+        <div id="upcoming-list" class="upcoming-list" hidden></div>
+      </section>
     </section>
   </section>
 {% endblock %}

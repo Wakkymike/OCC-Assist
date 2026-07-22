@@ -807,6 +807,15 @@ function initializeDailyOverview() {
   const overviewRoot = document.querySelector('#daily-overview');
   const refreshButton = document.querySelector('#refresh-overview');
   const overviewMessage = document.querySelector('#overview-message');
+  const toggleUpcomingButton = document.querySelector('#toggle-upcoming');
+  const upcomingControls = document.querySelector('#upcoming-controls');
+  const upcomingScope = document.querySelector('#upcoming-scope');
+  const upcomingPrev = document.querySelector('#upcoming-prev');
+  const upcomingNext = document.querySelector('#upcoming-next');
+  const upcomingRefresh = document.querySelector('#upcoming-refresh');
+  const upcomingPeriod = document.querySelector('#upcoming-period');
+  const upcomingMessage = document.querySelector('#upcoming-message');
+  const upcomingList = document.querySelector('#upcoming-list');
   const currentStatus = document.querySelector('#current-shift-status');
   const currentWindow = document.querySelector('#current-shift-window');
   const currentLocation = document.querySelector('#current-shift-location');
@@ -816,10 +825,22 @@ function initializeDailyOverview() {
 
   if (
     !overviewRoot || !refreshButton || !overviewMessage || !currentStatus || !currentWindow || !currentLocation
-    || !nextStatus || !nextWindow || !nextLocation
+    || !nextStatus || !nextWindow || !nextLocation || !toggleUpcomingButton || !upcomingControls
+    || !upcomingScope || !upcomingPrev || !upcomingNext || !upcomingRefresh || !upcomingPeriod
+    || !upcomingMessage || !upcomingList
   ) {
     return;
   }
+
+  let upcomingVisible = false;
+  let upcomingOffset = 0;
+
+  const escapeHtml = (value) => String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 
   const renderShiftCard = (target, shift, emptyLabel) => {
     target.status.textContent = shift ? shift.summary : emptyLabel;
@@ -875,8 +896,95 @@ function initializeDailyOverview() {
     setMessage(overviewMessage, 'Shift data loaded.', 'success');
   };
 
+  const renderUpcomingShifts = (items) => {
+    if (!items.length) {
+      upcomingList.innerHTML = '<p class="hours-empty">No upcoming shifts in this period.</p>';
+      return;
+    }
+
+    upcomingList.innerHTML = items
+      .map((shift) => `
+        <article class="overview-card upcoming-item">
+          <h3>${escapeHtml(shift.summary)}</h3>
+          <p class="overview-window">${escapeHtml(shift.windowLabel)}</p>
+          <p class="overview-location">${escapeHtml(shift.location || '')}</p>
+        </article>
+      `)
+      .join('');
+  };
+
+  const loadUpcomingShifts = async () => {
+    if (!upcomingVisible) {
+      return;
+    }
+
+    setMessage(upcomingMessage, 'Loading upcoming shifts...');
+    const query = new URLSearchParams({
+      scope: upcomingScope.value,
+      offset: String(upcomingOffset),
+    });
+
+    const response = await fetch(`${window.OCC_ASSIST.overviewUpcomingUrl}?${query.toString()}`, {
+      cache: 'no-store',
+    });
+    const payload = await response.json();
+
+    if (!response.ok || !payload.ok) {
+      setMessage(upcomingMessage, payload.message || 'Unable to load upcoming shifts.', 'error');
+      upcomingPeriod.textContent = '';
+      upcomingList.innerHTML = '';
+      return;
+    }
+
+    if (!payload.configured) {
+      setMessage(upcomingMessage, 'No RotaCloud iCal configured. Use settings to add your link.', 'error');
+      upcomingPeriod.textContent = '';
+      upcomingList.innerHTML = '';
+      return;
+    }
+
+    upcomingPeriod.textContent = `${payload.scope === 'week' ? 'Week' : 'Month'}: ${payload.periodLabel}`;
+    setMessage(upcomingMessage, `Loaded ${payload.shifts.length} shift${payload.shifts.length === 1 ? '' : 's'}.`, 'success');
+    renderUpcomingShifts(payload.shifts || []);
+  };
+
+  const setUpcomingVisibility = (visible) => {
+    upcomingVisible = visible;
+    upcomingControls.hidden = !visible;
+    upcomingPeriod.hidden = !visible;
+    upcomingMessage.hidden = !visible;
+    upcomingList.hidden = !visible;
+    toggleUpcomingButton.textContent = visible ? 'Hide Upcoming Shifts' : 'Show Upcoming Shifts';
+    if (visible) {
+      loadUpcomingShifts();
+    }
+  };
+
   refreshButton.addEventListener('click', () => {
     loadOverview();
+  });
+
+  toggleUpcomingButton.addEventListener('click', () => {
+    setUpcomingVisibility(!upcomingVisible);
+  });
+
+  upcomingScope.addEventListener('change', () => {
+    upcomingOffset = 0;
+    loadUpcomingShifts();
+  });
+
+  upcomingPrev.addEventListener('click', () => {
+    upcomingOffset -= 1;
+    loadUpcomingShifts();
+  });
+
+  upcomingNext.addEventListener('click', () => {
+    upcomingOffset += 1;
+    loadUpcomingShifts();
+  });
+
+  upcomingRefresh.addEventListener('click', () => {
+    loadUpcomingShifts();
   });
 
   loadOverview();
