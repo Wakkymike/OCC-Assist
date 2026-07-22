@@ -158,7 +158,7 @@ function initializeMap() {
       if (!mapContainer || !mapShell) {
         return;
       }
-      const shellHeight = Math.max(mapShell.clientHeight, 480);
+      const shellHeight = mapShell.clientHeight > 0 ? mapShell.clientHeight : 320;
       mapContainer.style.position = 'relative';
       mapContainer.style.width = '100%';
       mapContainer.style.height = `${shellHeight}px`;
@@ -237,9 +237,10 @@ function initializeMap() {
       if (sidebarPanel) {
         sidebarPanel.hidden = false;
       }
-      if (selectedService) selectedService.textContent = formatRouteLabel(vehicle);
+      const fleetDisplay = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
+      if (selectedService) selectedService.textContent = fleetDisplay;
       if (selectedRoute) selectedRoute.textContent = formatRouteLabel(vehicle);
-      if (selectedFleet) selectedFleet.textContent = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
+      if (selectedFleet) selectedFleet.textContent = fleetDisplay;
       if (selectedDirection) selectedDirection.textContent = formatVehicleDirection(vehicle.direction);
       if (selectedDirectionLabel) selectedDirectionLabel.textContent = formatVehicleDirection(vehicle.direction);
       if (selectedDestination) selectedDestination.textContent = String(vehicle.destination || 'Unknown').trim() || 'Unknown';

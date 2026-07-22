@@ -310,23 +310,25 @@ body::before {
 
 .tracking-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 18px;
-  align-items: start;
-  min-height: calc(100vh - 220px);
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 14px;
+  align-items: stretch;
+  min-height: 0;
+  height: 100%;
 }
 
 .tracking-map-panel {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
+  gap: 10px;
 }
 
 .map-shell-tracking {
-  flex: 1;
-  min-height: 620px;
-  height: clamp(620px, calc(100vh - 320px), 980px);
+  min-height: 0;
+  height: 100%;
+  margin-top: 0;
   position: relative;
 }
 
@@ -346,11 +348,12 @@ body::before {
 
 .tracking-sidebar {
   min-height: 0;
+  overflow: auto;
 }
 
 .tracking-toolbar {
   margin-top: 0;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -411,7 +414,7 @@ body::before {
 
 .tracking-sidebar-panel {
   display: grid;
-  gap: 16px;
+  gap: 10px;
 }
 
 .sidebar-pill,
@@ -434,7 +437,12 @@ body::before {
 .service-detail-list {
   margin: 0;
   display: grid;
-  gap: 12px;
+  gap: 10px;
+}
+
+.tracking-detail-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
 }
 
 .tracking-detail-list div,
@@ -446,14 +454,14 @@ body::before {
 .tracking-detail-list dt,
 .service-detail-list dt {
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 
 .tracking-detail-list dd,
 .service-detail-list dd {
   margin: 0;
   color: #eef3ff;
-  font-size: 0.96rem;
+  font-size: 0.92rem;
 }
 
 .map-toolbar {
@@ -876,8 +884,35 @@ body.driving-hours-active {
 }
 
 body.tracking-active {
+  height: 100dvh;
   min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
+}
+
+body.tracking-active .page {
+  min-height: 0;
+}
+
+body.tracking-active .shell {
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+body.tracking-active .tracking-panel {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 18px;
+}
+
+body.tracking-active .panel-head {
+  margin-bottom: 0;
 }
 
 body.driving-hours-active .page {
@@ -1214,7 +1249,8 @@ body.driving-hours-active .shell {
 
   .tracking-layout,
   .overview-summary,
-  .service-card .service-detail-list {
+  .service-card .service-detail-list,
+  .tracking-detail-list {
     grid-template-columns: 1fr;
   }
 

@@ -1041,6 +1041,41 @@ def project_point_onto_path(longitude: float, latitude: float, path: list[list[f
     return {'along': best_along, 'distance': best_distance}
 
 
+def select_nearest_stop(
+    vehicle: dict[str, object],
+    stops: list[dict[str, object]],
+    max_distance_meters: float = 250.0,
+) -> dict[str, object] | None:
+    if not stops:
+        return None
+
+    latitude = float(vehicle.get('latitude') or 0.0)
+    longitude = float(vehicle.get('longitude') or 0.0)
+    longitude_scale = 111412.84 * max(0.01, math.cos(math.radians(latitude)))
+    latitude_scale = 111132.92
+
+    best_stop: dict[str, object] | None = None
+    best_distance = float('inf')
+    for stop in stops:
+        if not isinstance(stop, dict):
+            continue
+        stop_lat = stop.get('latitude')
+        stop_lon = stop.get('longitude')
+        if stop_lat is None or stop_lon is None:
+            continue
+
+        delta_x = (float(stop_lon) - longitude) * longitude_scale
+        delta_y = (float(stop_lat) - latitude) * latitude_scale
+        distance = math.hypot(delta_x, delta_y)
+        if distance < best_distance:
+            best_distance = distance
+            best_stop = stop
+
+    if best_stop is None or best_distance > max_distance_meters:
+        return None
+    return best_stop
+
+
 def build_tracking_route_lookup(cache: dict[str, object] | None) -> dict[str, dict[str, object]]:
     if not cache:
         return {}
@@ -1093,6 +1128,7 @@ def select_last_stop_passed(vehicle: dict[str, object], route_sequence: dict[str
 def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str, object] | None) -> list[dict[str, object]]:
     route_lookup = build_tracking_route_lookup(cache)
     route_sequences = build_tracking_route_sequences(cache)
+    all_stops = [stop for stop in (cache or {}).get('stops', []) if isinstance(stop, dict)]
     enriched: list[dict[str, object]] = []
 
     for vehicle in vehicles:
@@ -1115,6 +1151,9 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
             selected_sequence = next(iter(route_direction_sequences.values()))
 
         last_stop = select_last_stop_passed(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
+        if last_stop is None and all_stops:
+            last_stop = select_nearest_stop(vehicle, all_stops)
+
         board_number = (
             str(
                 vehicle.get('blockRef')
@@ -1229,6 +1268,59 @@ def find_gtfs_file(extracted_dir: Path, filename: str) -> Path | None:
         if path.name.lower() == target:
             return path
     return None
+
+
+def load_gtfs_stops_from_directory(extracted_dir: Path) -> list[dict[str, object]]:
+    stops_path = find_gtfs_file(extracted_dir, 'stops.txt')
+    if stops_path is None:
+        return []
+
+    stops_lookup: dict[str, dict[str, object]] = {}
+    for row in read_gtfs_rows(stops_path):
+        stop_id = str(row.get('stop_id') or '').strip()
+        stop_name = str(row.get('stop_name') or '').strip()
+        lon_text = str(row.get('stop_lon') or '').strip()
+        lat_text = str(row.get('stop_lat') or '').strip()
+        if not stop_id or not lon_text or not lat_text:
+            continue
+        try:
+            longitude = float(lon_text)
+            latitude = float(lat_text)
+        except ValueError:
+            continue
+        stops_lookup[stop_id] = {
+            'stopId': stop_id,
+            'name': stop_name or stop_id,
+            'longitude': longitude,
+            'latitude': latitude,
+        }
+
+    return sorted(
+        stops_lookup.values(),
+        key=lambda stop: (
+            str(stop.get('name') or '').lower(),
+            str(stop.get('stopId') or '').lower(),
+        ),
+    )
+
+
+def ensure_gtfs_cache_stops(cache: dict[str, object] | None) -> dict[str, object] | None:
+    if cache is not None and isinstance(cache.get('stops'), list) and cache.get('stops'):
+        return cache
+
+    fallback_stops = load_gtfs_stops_from_directory(GTFS_EXTRACT_DIR)
+    if not fallback_stops:
+        return cache
+
+    updated_cache = dict(cache or {})
+    updated_cache['stops'] = fallback_stops
+    updated_cache.setdefault('routeStopSequences', {})
+    try:
+        GTFS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GTFS_CACHE_PATH.write_text(json.dumps(updated_cache), encoding='utf-8')
+    except OSError:
+        pass
+    return updated_cache
 
 
 def unzip_gtfs_archive(zip_bytes: bytes) -> Path:
@@ -1701,7 +1793,7 @@ def tracking_vehicles():
     except RuntimeError as error:
         return jsonify({'ok': False, 'message': str(error)}), 503
 
-    cache = load_gtfs_cache()
+    cache = ensure_gtfs_cache_stops(load_gtfs_cache())
     enriched_vehicles = enrich_tracking_vehicles(vehicles, cache)
 
     return jsonify(
@@ -1717,7 +1809,7 @@ def tracking_vehicles():
 @app.get('/api/tracking/stops')
 @login_required('tracking')
 def tracking_stops():
-    cache = load_gtfs_cache()
+    cache = ensure_gtfs_cache_stops(load_gtfs_cache())
     if cache is None or not cache.get('stops'):
         return jsonify(
             {
