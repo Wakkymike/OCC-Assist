@@ -271,6 +271,7 @@ function initializeDrivingHours() {
   const segmentForm = document.querySelector('#segment-form');
   const segmentList = document.querySelector('#segment-list');
   const clearButton = document.querySelector('#clear-segments');
+  const cancelEditButton = document.querySelector('#cancel-segment-edit');
   const formMessage = document.querySelector('#segment-message');
   const metricsPanel = document.querySelector('#hours-metrics');
   const alertsPanel = document.querySelector('#hours-alerts');
@@ -283,7 +284,7 @@ function initializeDrivingHours() {
   const employeeNumberInput = document.querySelector('#employee-number');
 
   if (
-    !app || !segmentForm || !segmentList || !clearButton || !metricsPanel || !alertsPanel || !saveSnapshotButton
+    !app || !segmentForm || !segmentList || !clearButton || !cancelEditButton || !metricsPanel || !alertsPanel || !saveSnapshotButton
     || !savedSnapshotsPanel || !savedSummary || !snapshotSearchInput || !driverNameInput || !employeeNumberInput
   ) {
     return;
@@ -556,6 +557,7 @@ function initializeDrivingHours() {
     if (submitButton) {
       submitButton.textContent = 'Add';
     }
+    cancelEditButton.hidden = true;
   };
 
   const setSegmentFormForEdit = (segment) => {
@@ -567,6 +569,7 @@ function initializeDrivingHours() {
     if (submitButton) {
       submitButton.textContent = 'Update';
     }
+    cancelEditButton.hidden = false;
     setMessage(formMessage, 'Editing selected segment. Update times/type and click Update.', 'success');
   };
 
@@ -727,6 +730,12 @@ function initializeDrivingHours() {
     segmentForm.reset();
     renderSegments();
     setMessage(formMessage, 'All segments cleared.', 'success');
+  });
+
+  cancelEditButton.addEventListener('click', () => {
+    resetSegmentFormMode();
+    segmentForm.reset();
+    setMessage(formMessage, 'Edit cancelled.', 'success');
   });
 
   snapshotSearchInput.addEventListener('input', () => {
