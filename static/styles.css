@@ -589,10 +589,134 @@ body::before {
   font-size: 0.96rem;
 }
 
+.overview-page {
+  width: min(1480px, 100%);
+}
+
+.overview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0 16px;
+  flex-wrap: wrap;
+}
+
+.overview-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.overview-summary-card {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.overview-summary-card p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.overview-summary-card strong {
+  font-size: clamp(1.4rem, 2vw, 2rem);
+}
+
+.service-overview-list {
+  display: grid;
+  gap: 16px;
+}
+
+.service-group {
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.service-group-head,
+.service-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.service-group-head h2,
+.service-card-route {
+  margin: 0;
+}
+
+.service-group-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.service-card {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(9, 17, 31, 0.58);
+}
+
+.service-card strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1rem;
+}
+
+.service-card .sidebar-pill {
+  white-space: nowrap;
+}
+
+.service-card .service-detail-list {
+  margin-top: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.service-card-route {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.service-count-pill {
+  color: #aee9ff;
+}
+
+.sidebar-note {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.vehicle-marker.is-selected .vehicle-pin {
+  box-shadow: 0 0 0 4px rgba(95, 193, 255, 0.2), 0 18px 30px rgba(5, 13, 25, 0.45);
+}
+
+.vehicle-marker.is-selected .vehicle-flag {
+  border-color: rgba(95, 193, 255, 0.8);
+  background: rgba(7, 17, 31, 0.98);
+}
+
+.vehicle-pin,
+.vehicle-flag {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
 body.driving-hours-active {
   min-height: 100dvh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+body.tracking-active {
+  min-height: 100dvh;
   overflow: hidden;
 }
 
@@ -928,7 +1052,27 @@ body.driving-hours-active .shell {
     grid-template-columns: 1fr;
   }
 
+  .tracking-layout,
+  .overview-summary,
+  .service-card .service-detail-list {
+    grid-template-columns: 1fr;
+  }
+
+  .tracking-layout {
+    min-height: auto;
+  }
+
+  body.tracking-active {
+    overflow: auto;
+  }
+
   .map-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .service-group-head,
+  .service-card-head {
     flex-direction: column;
     align-items: flex-start;
   }
@@ -982,5 +1126,11 @@ body.driving-hours-active .shell {
   .content-panel {
     padding: 28px 22px;
     border-radius: 22px;
+  }
+
+  .tracking-sidebar,
+  .service-group,
+  .overview-summary-card {
+    border-radius: 18px;
   }
 }

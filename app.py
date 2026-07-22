@@ -5,6 +5,7 @@ import re
 import json
 import csv
 import io
+import math
 import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -240,6 +241,8 @@ def inject_user_context() -> dict[str, object]:
         'static_version': app.config['STATIC_VERSION'],
         'permissions_map': PERMISSIONS,
         'page_permissions': PAGE_PERMISSIONS,
+        'tracking_stops_url': url_for('tracking_stops'),
+        'service_overview_url': url_for('service_overview'),
     }
 
 
@@ -437,6 +440,12 @@ def daily_overview_upcoming_shifts():
 @login_required('tracking')
 def tracking():
     return render_template('tracking.html')
+
+
+@app.get('/service-overview')
+@login_required('tracking')
+def service_overview():
+    return render_template('service-overview.html')
 
 
 def get_xml_text(node: ET.Element | None, path: str) -> str:
@@ -916,6 +925,9 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
         origin_departure = get_xml_text(journey, 'siri:OriginAimedDepartureTime')
         destination_arrival = get_xml_text(journey, 'siri:DestinationAimedArrivalTime')
         journey_ref = get_xml_text(journey, 'siri:FramedVehicleJourneyRef/siri:DatedVehicleJourneyRef')
+        vehicle_journey_ref = get_xml_text(journey, 'siri:FramedVehicleJourneyRef/siri:VehicleJourneyRef')
+        block_ref = get_xml_text(journey, 'siri:BlockRef')
+        journey_code = get_xml_text(journey, 'siri:JourneyCode')
 
         recorded_at_time = parse_bods_timestamp(recorded_at)
         origin_departure_time = parse_bods_timestamp(origin_departure)
@@ -942,10 +954,245 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
                 'recordedAt': recorded_at,
                 'originAimedDepartureTime': origin_departure,
                 'destinationAimedArrivalTime': destination_arrival,
+                'journeyRef': journey_ref,
+                'vehicleJourneyRef': vehicle_journey_ref,
+                'blockRef': block_ref,
+                'journeyCode': journey_code,
             }
         )
 
     return items, response_timestamp
+
+
+def normalize_tracking_key(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').strip().lower())
+
+
+def route_points_from_stop_sequence(stops: list[dict[str, object]]) -> list[list[float]]:
+    points: list[list[float]] = []
+    for stop in stops:
+        longitude = stop.get('longitude')
+        latitude = stop.get('latitude')
+        if longitude is None or latitude is None:
+            continue
+        point = [float(longitude), float(latitude)]
+        if not points or points[-1] != point:
+            points.append(point)
+    return points
+
+
+def cumulative_path_distances(path: list[list[float]]) -> list[float]:
+    distances = [0.0]
+    total = 0.0
+    for index in range(1, len(path)):
+        start_longitude, start_latitude = path[index - 1]
+        end_longitude, end_latitude = path[index]
+        longitude_scale = 111412.84 * max(0.01, math.cos(math.radians((start_latitude + end_latitude) / 2.0)))
+        latitude_scale = 111132.92
+        delta_x = (end_longitude - start_longitude) * longitude_scale
+        delta_y = (end_latitude - start_latitude) * latitude_scale
+        total += math.hypot(delta_x, delta_y)
+        distances.append(total)
+    return distances
+
+
+def project_point_onto_path(longitude: float, latitude: float, path: list[list[float]]) -> dict[str, float] | None:
+    if len(path) < 2:
+        return None
+
+    reference_latitude = latitude
+    longitude_scale = 111412.84 * max(0.01, math.cos(math.radians(reference_latitude)))
+    latitude_scale = 111132.92
+
+    point_x = longitude * longitude_scale
+    point_y = latitude * latitude_scale
+
+    best_distance = float('inf')
+    best_along = 0.0
+    accumulated = 0.0
+
+    for index in range(len(path) - 1):
+        start_longitude, start_latitude = path[index]
+        end_longitude, end_latitude = path[index + 1]
+        start_x = start_longitude * longitude_scale
+        start_y = start_latitude * latitude_scale
+        end_x = end_longitude * longitude_scale
+        end_y = end_latitude * latitude_scale
+
+        segment_x = end_x - start_x
+        segment_y = end_y - start_y
+        segment_length = math.hypot(segment_x, segment_y)
+        if segment_length == 0:
+            continue
+
+        t = ((point_x - start_x) * segment_x + (point_y - start_y) * segment_y) / (segment_length * segment_length)
+        t = max(0.0, min(1.0, t))
+        projected_x = start_x + (segment_x * t)
+        projected_y = start_y + (segment_y * t)
+        distance = math.hypot(point_x - projected_x, point_y - projected_y)
+        along = accumulated + (segment_length * t)
+
+        if distance < best_distance:
+            best_distance = distance
+            best_along = along
+
+        accumulated += segment_length
+
+    return {'along': best_along, 'distance': best_distance}
+
+
+def build_tracking_route_lookup(cache: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    if not cache:
+        return {}
+
+    lookup: dict[str, dict[str, object]] = {}
+    for route in cache.get('routes', []):
+        if not isinstance(route, dict):
+            continue
+        route_id = str(route.get('id') or '').strip()
+        route_label = str(route.get('label') or route.get('lineName') or route_id).strip()
+        for candidate in {route_id, route_label, str(route.get('lineName') or '').strip()}:
+            key = normalize_tracking_key(candidate)
+            if key:
+                lookup[key] = route
+    return lookup
+
+
+def build_tracking_route_sequences(cache: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    if not cache:
+        return {}
+
+    route_sequences = cache.get('routeStopSequences', {})
+    return route_sequences if isinstance(route_sequences, dict) else {}
+
+
+def select_last_stop_passed(vehicle: dict[str, object], route_sequence: dict[str, object] | None) -> dict[str, object] | None:
+    if not route_sequence:
+        return None
+
+    stops = route_sequence.get('stops', [])
+    if not isinstance(stops, list) or len(stops) < 2:
+        return None
+
+    path = route_points_from_stop_sequence(stops)
+    projection = project_point_onto_path(float(vehicle['longitude']), float(vehicle['latitude']), path)
+    if projection is None:
+        return None
+
+    cumulative = cumulative_path_distances(path)
+    selected_stop: dict[str, object] | None = None
+    for stop, stop_along in zip(stops, cumulative):
+        if not isinstance(stop, dict):
+            continue
+        if stop_along <= projection['along'] + 30:
+            selected_stop = stop
+
+    return selected_stop
+
+
+def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str, object] | None) -> list[dict[str, object]]:
+    route_lookup = build_tracking_route_lookup(cache)
+    route_sequences = build_tracking_route_sequences(cache)
+    enriched: list[dict[str, object]] = []
+
+    for vehicle in vehicles:
+        service = str(vehicle.get('service') or '').strip()
+        normalized_service = normalize_tracking_key(service)
+        route = route_lookup.get(normalized_service)
+        route_id = str(route.get('id') or '').strip() if route else ''
+        route_label = str(route.get('label') or route.get('lineName') or service or route_id).strip()
+        direction = normalize_gtfs_direction(str(vehicle.get('direction') or ''))
+        route_direction_sequences = route_sequences.get(route_id, {}) if route_id else {}
+        if not isinstance(route_direction_sequences, dict):
+            route_direction_sequences = {}
+
+        selected_sequence = None
+        if direction in route_direction_sequences:
+            selected_sequence = route_direction_sequences.get(direction)
+        elif 'unknown' in route_direction_sequences:
+            selected_sequence = route_direction_sequences.get('unknown')
+        elif route_direction_sequences:
+            selected_sequence = next(iter(route_direction_sequences.values()))
+
+        last_stop = select_last_stop_passed(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
+        board_number = (
+            str(
+                vehicle.get('blockRef')
+                or vehicle.get('journeyCode')
+                or vehicle.get('vehicleJourneyRef')
+                or vehicle.get('journeyRef')
+                or vehicle.get('boardNumber')
+                or ''
+            ).strip()
+            or None
+        )
+
+        enriched.append(
+            {
+                **vehicle,
+                'routeId': route_id or None,
+                'routeLabel': route_label,
+                'boardNumber': board_number,
+                'lastStopPassed': (
+                    {
+                        'id': str(last_stop.get('stopId') or last_stop.get('id') or '').strip(),
+                        'name': str(last_stop.get('name') or last_stop.get('stopName') or 'Unknown stop').strip(),
+                        'latitude': float(last_stop.get('latitude', 0.0)),
+                        'longitude': float(last_stop.get('longitude', 0.0)),
+                    }
+                    if last_stop
+                    else None
+                ),
+            }
+        )
+
+    return enriched
+
+
+def group_active_services(vehicles: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, object]] = {}
+
+    for vehicle in vehicles:
+        route_id = str(vehicle.get('routeId') or vehicle.get('service') or 'unknown').strip()
+        route_label = str(vehicle.get('routeLabel') or vehicle.get('service') or route_id).strip()
+        key = normalize_tracking_key(route_id or route_label)
+        group = grouped.setdefault(
+            key,
+            {
+                'routeId': route_id,
+                'routeLabel': route_label,
+                'activeCount': 0,
+                'vehicles': [],
+            },
+        )
+        group['activeCount'] = int(group['activeCount']) + 1
+        group['vehicles'].append(vehicle)
+
+    ordered_groups = sorted(
+        grouped.values(),
+        key=lambda item: route_sort_key(str(item.get('routeLabel') or item.get('routeId') or '')),
+    )
+
+    for group in ordered_groups:
+        group['vehicles'] = sorted(
+            group['vehicles'],
+            key=lambda item: (
+                str(item.get('direction') or '').lower(),
+                str(item.get('destination') or '').lower(),
+                str(item.get('fleetNumber') or '').lower(),
+            ),
+        )
+
+    return ordered_groups
+
+
+def serialize_tracking_stop(stop: dict[str, object]) -> dict[str, object]:
+    return {
+        'id': str(stop.get('stopId') or stop.get('id') or '').strip(),
+        'name': str(stop.get('name') or stop.get('stopName') or 'Unknown stop').strip(),
+        'latitude': float(stop.get('latitude', 0.0)),
+        'longitude': float(stop.get('longitude', 0.0)),
+    }
 
 
 def route_sort_key(route: str) -> tuple[int, int, str]:
@@ -1051,6 +1298,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     route_shapes: dict[str, set[str]] = {}
     route_shape_directions: dict[str, dict[str, set[str]]] = {}
     route_trips: dict[str, set[str]] = {}
+    trip_routes: dict[str, str] = {}
     trip_directions: dict[str, str] = {}
     for row in trip_rows:
         route_id = str(row.get('route_id') or '').strip()
@@ -1063,6 +1311,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             continue
         if trip_id:
             route_trips.setdefault(route_id, set()).add(trip_id)
+            trip_routes[trip_id] = route_id
             trip_directions[trip_id] = direction
         if shape_id:
             route_shapes.setdefault(route_id, set()).add(shape_id)
@@ -1089,13 +1338,15 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
         shapes.setdefault(shape_id, []).append((longitude, latitude, sequence))
 
     trip_points: dict[str, list[list[float]]] = {}
+    trip_stop_sequences: dict[str, list[dict[str, object]]] = {}
+    stops_lookup: dict[str, dict[str, object]] = {}
     if stops_path is not None and stop_times_path is not None:
         relevant_trip_ids = set().union(*route_trips.values()) if route_trips else set()
         if relevant_trip_ids:
             stop_rows = read_gtfs_rows(stops_path)
-            stops_lookup: dict[str, tuple[float, float]] = {}
             for row in stop_rows:
                 stop_id = str(row.get('stop_id') or '').strip()
+                stop_name = str(row.get('stop_name') or '').strip()
                 lon_text = str(row.get('stop_lon') or '').strip()
                 lat_text = str(row.get('stop_lat') or '').strip()
                 if not stop_id or not lon_text or not lat_text:
@@ -1105,7 +1356,12 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                     latitude = float(lat_text)
                 except ValueError:
                     continue
-                stops_lookup[stop_id] = (longitude, latitude)
+                stops_lookup[stop_id] = {
+                    'stopId': stop_id,
+                    'name': stop_name or stop_id,
+                    'longitude': longitude,
+                    'latitude': latitude,
+                }
 
             raw_trip_points: dict[str, list[tuple[int, str]]] = {}
             with stop_times_path.open('r', encoding='utf-8-sig', newline='') as handle:
@@ -1126,16 +1382,31 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
 
             for trip_id, entries in raw_trip_points.items():
                 coordinates: list[list[float]] = []
+                stop_sequence: list[dict[str, object]] = []
                 for _, stop_id in sorted(entries, key=lambda entry: entry[0]):
-                    longitude, latitude = stops_lookup[stop_id]
+                    stop_data = stops_lookup[stop_id]
+                    longitude = float(stop_data['longitude'])
+                    latitude = float(stop_data['latitude'])
                     point = [longitude, latitude]
                     if not coordinates or coordinates[-1] != point:
                         coordinates.append(point)
+                    if not stop_sequence or stop_sequence[-1].get('stopId') != stop_id:
+                        stop_sequence.append(
+                            {
+                                'stopId': stop_id,
+                                'name': stop_data['name'],
+                                'longitude': longitude,
+                                'latitude': latitude,
+                            }
+                        )
                 if len(coordinates) >= 2:
                     trip_points[trip_id] = coordinates
+                if len(stop_sequence) >= 2:
+                    trip_stop_sequences[trip_id] = stop_sequence
 
     route_items: list[dict[str, object]] = []
     features: list[dict[str, object]] = []
+    route_stop_sequences: dict[str, dict[str, dict[str, object]]] = {}
 
     for route_id, shape_ids in route_shapes.items():
         meta = route_meta.get(route_id, {})
@@ -1184,6 +1455,24 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                     'shapeCount': route_feature_count,
                 }
             )
+
+        best_trip_by_direction: dict[str, tuple[int, str]] = {}
+        for trip_id in sorted(route_trips.get(route_id, set())):
+            stop_sequence = trip_stop_sequences.get(trip_id, [])
+            if len(stop_sequence) < 2:
+                continue
+            direction = trip_directions.get(trip_id, 'unknown')
+            current_best = best_trip_by_direction.get(direction)
+            if current_best is None or len(stop_sequence) > current_best[0]:
+                best_trip_by_direction[direction] = (len(stop_sequence), trip_id)
+
+        if best_trip_by_direction:
+            route_stop_sequences[route_id] = {}
+            for direction, (_, trip_id) in best_trip_by_direction.items():
+                route_stop_sequences[route_id][direction] = {
+                    'tripId': trip_id,
+                    'stops': trip_stop_sequences[trip_id],
+                }
 
     for route_id, trip_ids in route_trips.items():
         if any(item.get('id') == route_id for item in route_items):
@@ -1235,6 +1524,14 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                 }
             )
 
+    all_stops = sorted(
+        stops_lookup.values(),
+        key=lambda stop: (
+            str(stop.get('name') or '').lower(),
+            str(stop.get('stopId') or '').lower(),
+        ),
+    )
+
     route_items.sort(key=lambda item: route_sort_key(str(item['lineName'])))
     if not route_items:
         raise ValueError('No plottable route paths were found in this GTFS ZIP for the selected agency.')
@@ -1242,6 +1539,8 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     return {
         'routeCount': len(route_items),
         'routes': route_items,
+        'stops': all_stops,
+        'routeStopSequences': route_stop_sequences,
         'featureCollection': {
             'type': 'FeatureCollection',
             'features': features,
@@ -1270,6 +1569,8 @@ def save_gtfs_data(zip_bytes: bytes, parsed: dict[str, object], original_filenam
         'originalFilename': original_filename,
         'routeCount': int(parsed['routeCount']),
         'routes': parsed['routes'],
+        'stops': parsed.get('stops', []),
+        'routeStopSequences': parsed.get('routeStopSequences', {}),
         'featureCollection': parsed['featureCollection'],
     }
     GTFS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
@@ -1400,12 +1701,40 @@ def tracking_vehicles():
     except RuntimeError as error:
         return jsonify({'ok': False, 'message': str(error)}), 503
 
+    cache = load_gtfs_cache()
+    enriched_vehicles = enrich_tracking_vehicles(vehicles, cache)
+
     return jsonify(
         {
             'ok': True,
-            'vehicles': vehicles,
+            'vehicles': enriched_vehicles,
             'sourceTimestamp': source_timestamp,
             'refreshedAt': datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.get('/api/tracking/stops')
+@login_required('tracking')
+def tracking_stops():
+    cache = load_gtfs_cache()
+    if cache is None or not cache.get('stops'):
+        return jsonify(
+            {
+                'ok': True,
+                'configured': False,
+                'message': 'No GTFS stops are available yet.',
+                'stops': [],
+            }
+        )
+
+    stops = [serialize_tracking_stop(stop) for stop in cache.get('stops', []) if isinstance(stop, dict)]
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'stops': stops,
+            'stopCount': len(stops),
         }
     )
 

@@ -58,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   initializeUsersPage();
   initializeMap();
+  initializeServiceOverview();
   initializeDrivingHours();
   initializeDailyOverview();
   initializeSettingsPage();
@@ -72,6 +73,54 @@ function setMessage(element, message, variant = '') {
   element.className = variant ? `message ${variant}` : 'message';
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function normalizeTrackingKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function formatVehicleDirection(value) {
+  const direction = String(value || '').trim().toLowerCase();
+  if (direction === 'inbound') {
+    return 'Inbound';
+  }
+  if (direction === 'outbound') {
+    return 'Outbound';
+  }
+  return direction ? direction.charAt(0).toUpperCase() + direction.slice(1) : 'Unknown';
+}
+
+function formatBoardNumber(vehicle) {
+  return String(
+    vehicle?.boardNumber
+      || vehicle?.blockRef
+      || vehicle?.journeyCode
+      || vehicle?.vehicleJourneyRef
+      || vehicle?.journeyRef
+      || 'Unknown',
+  ).trim() || 'Unknown';
+}
+
+function formatLastStop(lastStop) {
+  if (!lastStop) {
+    return 'Not yet available';
+  }
+  return String(lastStop.name || 'Unknown stop').trim() || 'Unknown stop';
+}
+
+function formatRouteLabel(vehicle) {
+  return String(vehicle?.routeLabel || vehicle?.service || 'Unknown').trim() || 'Unknown';
+}
+
+
+
 function initializeMap() {
   const mapContainer = document.querySelector('#map');
   const mapStatus = document.querySelector('#map-status');
@@ -79,65 +128,126 @@ function initializeMap() {
   const routeSelect = document.querySelector('#static-route-select');
   const directionSelect = document.querySelector('#static-direction-select');
   const routeStatus = document.querySelector('#map-route-status');
+  const stopToggle = document.querySelector('#bus-stops-toggle');
+  const trackingApp = document.querySelector('#tracking-app');
+  const sidebarEmpty = document.querySelector('#tracking-sidebar-empty');
+  const sidebarPanel = document.querySelector('#tracking-sidebar-panel');
+  const selectedService = document.querySelector('#tracking-selected-service');
+  const selectedRoute = document.querySelector('#tracking-selected-route');
+  const selectedFleet = document.querySelector('#tracking-selected-fleet');
+  const selectedDirection = document.querySelector('#tracking-selected-direction');
+  const selectedDirectionLabel = document.querySelector('#tracking-selected-direction-label');
+  const selectedDestination = document.querySelector('#tracking-selected-destination');
+  const selectedBoard = document.querySelector('#tracking-selected-board');
+  const selectedLastStop = document.querySelector('#tracking-selected-last-stop');
+  const selectedUpdated = document.querySelector('#tracking-selected-updated');
   const boltonCenter = [-2.428219, 53.576864];
-  const staleAfterMs = 120_000;
   if (!mapContainer || typeof mapboxgl === 'undefined') {
     return;
+  }
+
+  if (trackingApp) {
+    document.body.classList.add('tracking-active');
   }
 
   if (window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE') {
     mapboxgl.accessToken = window.MAPBOX_TOKEN;
     const map = new mapboxgl.Map({
       container: 'map',
-      style: 'mapbox://styles/mapbox/dark-v11',
+      style: 'mapbox://styles/mapbox/streets-v12',
       center: boltonCenter,
-      zoom: 12,
+      zoom: 10.6,
     });
 
     const vehicleStates = new Map();
+    const vehicleDataById = new Map();
+    let selectedVehicleId = null;
     let refreshIntervalId = null;
+    let stopFeatureCollection = { type: 'FeatureCollection', features: [] };
+    let stopFeaturesLoaded = false;
     const routeSourceId = 'gnw-route-overlay-source';
     const routeOutlineLayerId = 'gnw-route-overlay-outline';
     const routeLayerId = 'gnw-route-overlay';
-    const emptyRouteFeatureCollection = {
-      type: 'FeatureCollection',
-      features: [],
-    };
+    const stopSourceId = 'gnw-stop-overlay-source';
+    const stopLayerId = 'gnw-stop-overlay';
+    const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
+    const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
 
-    const escapeHtml = (value) => String(value || '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-
-    const buildVehicleSignature = (vehicle) => {
-      return [
-        vehicle.recordedAt,
-        vehicle.latitude,
-        vehicle.longitude,
-        vehicle.service,
-        vehicle.destination,
-        vehicle.direction,
-        vehicle.fleetNumber,
-      ].join('|');
+    const setRouteStatus = (message) => {
+      if (routeStatus) {
+        routeStatus.textContent = message;
+      }
     };
 
     const removeVehicleMarker = (state) => {
       if (!state.marker) {
         return;
       }
-
       state.marker.remove();
       state.marker = null;
       state.flag = null;
+      state.element = null;
     };
 
-    const ensureVehicleMarker = (state, lngLat, labelText, direction, service) => {
+    const syncSelectedMarkerStyles = () => {
+      vehicleStates.forEach((state, vehicleId) => {
+        if (state.element) {
+          state.element.classList.toggle('is-selected', vehicleId === selectedVehicleId);
+        }
+      });
+    };
+
+    const setSidebarEmpty = (message) => {
+      if (sidebarEmpty) {
+        sidebarEmpty.textContent = message;
+        sidebarEmpty.hidden = false;
+      }
+      if (sidebarPanel) {
+        sidebarPanel.hidden = true;
+      }
+    };
+
+    const setSidebarVehicle = (vehicle) => {
+      if (!vehicle) {
+        setSidebarEmpty('Select a bus marker to inspect its service details.');
+        return;
+      }
+
+      if (sidebarEmpty) {
+        sidebarEmpty.hidden = true;
+      }
+      if (sidebarPanel) {
+        sidebarPanel.hidden = false;
+      }
+      if (selectedService) selectedService.textContent = formatRouteLabel(vehicle);
+      if (selectedRoute) selectedRoute.textContent = formatRouteLabel(vehicle);
+      if (selectedFleet) selectedFleet.textContent = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
+      if (selectedDirection) selectedDirection.textContent = formatVehicleDirection(vehicle.direction);
+      if (selectedDirectionLabel) selectedDirectionLabel.textContent = formatVehicleDirection(vehicle.direction);
+      if (selectedDestination) selectedDestination.textContent = String(vehicle.destination || 'Unknown').trim() || 'Unknown';
+      if (selectedBoard) selectedBoard.textContent = formatBoardNumber(vehicle);
+      if (selectedLastStop) selectedLastStop.textContent = formatLastStop(vehicle.lastStopPassed);
+      if (selectedUpdated) selectedUpdated.textContent = `Updated ${formatFeedTime(vehicle.recordedAt || vehicle.sourceTimestamp || vehicle.refreshedAt)}`;
+    };
+
+    const selectVehicle = (vehicleId) => {
+      selectedVehicleId = vehicleId;
+      if (!vehicleId) {
+        setSidebarEmpty('Select a bus marker to inspect its service details.');
+        syncSelectedMarkerStyles();
+        return;
+      }
+      setSidebarVehicle(vehicleDataById.get(vehicleId) || null);
+      syncSelectedMarkerStyles();
+    };
+
+    const ensureVehicleMarker = (state, lngLat, labelText, direction, service, vehicle) => {
       if (state.marker) {
         state.marker.setLngLat(lngLat);
         state.flag.textContent = labelText;
         state.flag.dataset.direction = direction;
+        state.element.classList.toggle('is-selected', vehicle.id === selectedVehicleId);
+        state.data = vehicle;
         return;
       }
 
@@ -154,188 +264,136 @@ function initializeMap() {
       pin.textContent = service;
 
       markerElement.append(flag, pin);
+      markerElement.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectVehicle(vehicle.id);
+      });
 
       state.flag = flag;
-      state.marker = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' })
-        .setLngLat(lngLat)
-        .addTo(map);
+      state.element = markerElement;
+      state.data = vehicle;
+      state.marker = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' }).setLngLat(lngLat).addTo(map);
     };
 
     const applyZoomStyling = () => {
       const zoom = map.getZoom();
-      const normalized = Math.max(0, Math.min(1, (zoom - 12) / 4));
+      const normalized = Math.max(0, Math.min(1, (zoom - 9.5) / 4.5));
       const flagScale = 0.3 + normalized * 0.7;
       const flagOpacity = 0.18 + normalized * 0.82;
       mapContainer.style.setProperty('--vehicle-flag-scale', flagScale.toFixed(2));
       mapContainer.style.setProperty('--vehicle-flag-opacity', flagOpacity.toFixed(2));
     };
 
-    const setRouteStatus = (message) => {
-      if (!routeStatus) {
-        return;
-      }
-      routeStatus.textContent = message;
-    };
-
     const setRouteControlsEnabled = (enabled) => {
-      if (routeSelect) {
-        routeSelect.disabled = !enabled;
-      }
-      if (directionSelect) {
-        directionSelect.disabled = !enabled;
-      }
+      if (routeSelect) routeSelect.disabled = !enabled;
+      if (directionSelect) directionSelect.disabled = !enabled;
     };
 
     const ensureRouteOverlayLayers = () => {
-      if (map.getSource(routeSourceId)) {
-        return;
-      }
+      if (map.getSource(routeSourceId)) return;
+      map.addSource(routeSourceId, { type: 'geojson', data: emptyRouteFeatureCollection });
+      map.addLayer({ id: routeOutlineLayerId, type: 'line', source: routeSourceId, paint: { 'line-color': '#07121b', 'line-width': 8, 'line-opacity': 0.88 } });
+      map.addLayer({ id: routeLayerId, type: 'line', source: routeSourceId, paint: { 'line-color': ['match', ['get', 'direction'], 'inbound', '#23c36b', 'outbound', '#d43f3a', '#35deff'], 'line-width': 4, 'line-opacity': 0.95 } });
+    };
 
-      map.addSource(routeSourceId, {
-        type: 'geojson',
-        data: emptyRouteFeatureCollection,
-      });
-
-      map.addLayer({
-        id: routeOutlineLayerId,
-        type: 'line',
-        source: routeSourceId,
-        paint: {
-          'line-color': '#07121b',
-          'line-width': 8,
-          'line-opacity': 0.88,
-        },
-      });
-
-      map.addLayer({
-        id: routeLayerId,
-        type: 'line',
-        source: routeSourceId,
-        paint: {
-          'line-color': [
-            'match',
-            ['get', 'direction'],
-            'inbound', '#23c36b',
-            'outbound', '#d43f3a',
-            '#35deff',
-          ],
-          'line-width': 4,
-          'line-opacity': 0.95,
-        },
-      });
+    const ensureStopOverlayLayers = () => {
+      if (map.getSource(stopSourceId)) return;
+      map.addSource(stopSourceId, { type: 'geojson', data: emptyStopFeatureCollection });
+      map.addLayer({ id: stopLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-color': '#5fc1ff', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.4, 12, 3.8, 15, 5.2], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.55 } });
     };
 
     const applyRouteOverlay = (featureCollection, showOverlay) => {
-      if (!map.isStyleLoaded()) {
-        return;
-      }
-
+      if (!map.isStyleLoaded()) return;
       ensureRouteOverlayLayers();
       const source = map.getSource(routeSourceId);
-      if (!source) {
-        return;
-      }
-
+      if (!source) return;
       source.setData(showOverlay ? featureCollection : emptyRouteFeatureCollection);
-
       const visibility = showOverlay ? 'visible' : 'none';
-      if (map.getLayer(routeOutlineLayerId)) {
-        map.setLayoutProperty(routeOutlineLayerId, 'visibility', visibility);
-      }
-      if (map.getLayer(routeLayerId)) {
-        map.setLayoutProperty(routeLayerId, 'visibility', visibility);
-      }
+      if (map.getLayer(routeOutlineLayerId)) map.setLayoutProperty(routeOutlineLayerId, 'visibility', visibility);
+      if (map.getLayer(routeLayerId)) map.setLayoutProperty(routeLayerId, 'visibility', visibility);
     };
 
-    const updateRouteOptions = (routes, selectedRoute) => {
-      if (!routeSelect) {
-        return;
-      }
+    const applyStopOverlay = (featureCollection, showOverlay) => {
+      if (!map.isStyleLoaded()) return;
+      ensureStopOverlayLayers();
+      const source = map.getSource(stopSourceId);
+      if (!source) return;
+      source.setData(showOverlay ? featureCollection : emptyStopFeatureCollection);
+      const visibility = showOverlay ? 'visible' : 'none';
+      if (map.getLayer(stopLayerId)) map.setLayoutProperty(stopLayerId, 'visibility', visibility);
+    };
 
-      const currentSelection = selectedRoute || routeSelect.value || 'all';
-      routeSelect.innerHTML = [
-        '<option value="all">All uploaded routes</option>',
-        ...routes.map((route) => {
-          const routeId = escapeHtml(route.id || '');
-          const routeLabel = escapeHtml(route.label || route.lineName || route.id || 'Route');
-          return `<option value="${routeId}">${routeLabel}</option>`;
-        }),
-      ].join('');
-
+    const updateRouteOptions = (routes, selectedRouteValue) => {
+      if (!routeSelect) return;
+      const currentSelection = selectedRouteValue || routeSelect.value || 'all';
+      routeSelect.innerHTML = ['<option value="all">All uploaded routes</option>', ...routes.map((route) => `<option value="${escapeHtml(route.id || '')}">${escapeHtml(route.label || route.lineName || route.id || 'Route')}</option>`)].join('');
       const routeIds = routes.map((route) => String(route.id || ''));
-      const canKeepSelection = currentSelection === 'all' || routeIds.includes(currentSelection);
-      routeSelect.value = canKeepSelection ? currentSelection : 'all';
+      routeSelect.value = currentSelection === 'all' || routeIds.includes(currentSelection) ? currentSelection : 'all';
+    };
+
+    const loadTrackingStops = async () => {
+      if (!window.OCC_ASSIST.trackingStopsUrl) return;
+      try {
+        const response = await fetch(window.OCC_ASSIST.trackingStopsUrl, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load stop data.');
+        const stops = payload.stops || [];
+        stopFeatureCollection = { type: 'FeatureCollection', features: stops.map((stop) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [stop.longitude, stop.latitude] }, properties: { stopId: stop.id, name: stop.name } })) };
+        stopFeaturesLoaded = true;
+        if (stopToggle) stopToggle.disabled = false;
+        applyStopOverlay(stopFeatureCollection, Boolean(stopToggle?.checked));
+      } catch (error) {
+        stopFeatureCollection = emptyStopFeatureCollection;
+        stopFeaturesLoaded = false;
+        applyStopOverlay(emptyStopFeatureCollection, false);
+        if (stopToggle) stopToggle.disabled = true;
+      }
     };
 
     const renderVehicles = (vehicles, observedAtMs) => {
       const activeIds = new Set();
       let visibleVehicleCount = 0;
-
       vehicles.forEach((vehicle) => {
         activeIds.add(vehicle.id);
+        vehicleDataById.set(vehicle.id, vehicle);
         const lngLat = [vehicle.longitude, vehicle.latitude];
-        const signature = buildVehicleSignature(vehicle);
-
-        const labelText = [
-          `Service ${vehicle.service}`,
-          vehicle.destination,
-          vehicle.direction,
-          `Fleet ${vehicle.fleetNumber}`,
-        ].join(' | ');
-
+        const labelText = [formatRouteLabel(vehicle), vehicle.destination].filter(Boolean).join(' • ');
         if (vehicleStates.has(vehicle.id)) {
           const vehicleState = vehicleStates.get(vehicle.id);
-          if (vehicleState.lastSignature !== signature) {
-            vehicleState.lastSignature = signature;
-            vehicleState.lastFreshAtMs = observedAtMs;
-          }
-
-          if (observedAtMs - vehicleState.lastFreshAtMs > staleAfterMs) {
-            removeVehicleMarker(vehicleState);
-            return;
-          }
-
-          ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, vehicle.service);
+          ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, formatRouteLabel(vehicle), vehicle);
           visibleVehicleCount += 1;
           return;
         }
-
-        const vehicleState = {
-          marker: null,
-          flag: null,
-          lastFreshAtMs: observedAtMs,
-          lastSignature: signature,
-        };
-        ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, vehicle.service);
+        const vehicleState = { marker: null, flag: null, element: null, data: vehicle };
+        ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, formatRouteLabel(vehicle), vehicle);
         vehicleStates.set(vehicle.id, vehicleState);
         visibleVehicleCount += 1;
       });
-
       vehicleStates.forEach((vehicleState, vehicleId) => {
         if (!activeIds.has(vehicleId)) {
           removeVehicleMarker(vehicleState);
           vehicleStates.delete(vehicleId);
+          vehicleDataById.delete(vehicleId);
         }
       });
-
+      if (selectedVehicleId && !vehicleDataById.has(selectedVehicleId)) {
+        selectedVehicleId = null;
+        setSidebarEmpty('Select a bus marker to inspect its service details.');
+      } else if (selectedVehicleId) {
+        setSidebarVehicle(vehicleDataById.get(selectedVehicleId));
+      }
+      syncSelectedMarkerStyles();
       return visibleVehicleCount;
     };
 
     const refreshVehicles = async () => {
-      if (!window.OCC_ASSIST.trackingVehiclesUrl) {
-        return;
-      }
-
+      if (!window.OCC_ASSIST.trackingVehiclesUrl) return;
       try {
         const response = await fetch(window.OCC_ASSIST.trackingVehiclesUrl, { cache: 'no-store' });
         const payload = await response.json();
-        if (!response.ok || !payload.ok) {
-          throw new Error(payload.message || 'Unable to load vehicle positions.');
-        }
-
+        if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load vehicle positions.');
         const observedAtMs = Date.parse(payload.sourceTimestamp || payload.refreshedAt) || Date.now();
         const activeVehicles = payload.vehicles || [];
-
         const visibleVehicleCount = renderVehicles(activeVehicles, observedAtMs);
         const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
         setMessage(mapStatus, `${visibleVehicleCount} live vehicle${visibleVehicleCount === 1 ? '' : 's'} updated ${updated}.`, 'success');
@@ -349,43 +407,27 @@ function initializeMap() {
         setRouteStatus('Static route API is not configured.');
         return;
       }
-
       try {
-        const selectedRoute = routeSelect?.value || 'all';
-        const selectedDirection = directionSelect?.value || 'all';
-        const query = new URLSearchParams({ route: selectedRoute, direction: selectedDirection });
+        const selectedRouteValue = routeSelect?.value || 'all';
+        const selectedDirectionValue = directionSelect?.value || 'all';
+        const query = new URLSearchParams({ route: selectedRouteValue, direction: selectedDirectionValue });
         const response = await fetch(`${window.OCC_ASSIST.trackingStaticRoutesUrl}?${query.toString()}`, { cache: 'no-store' });
         const payload = await response.json();
-        if (!response.ok || !payload.ok) {
-          throw new Error(payload.message || 'Unable to load static route data.');
-        }
-
+        if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load static route data.');
         const routes = payload.routes || [];
         updateRouteOptions(routes, payload.selectedRoute || 'all');
-        if (directionSelect) {
-          directionSelect.value = payload.selectedDirection || selectedDirection;
-        }
-
+        if (directionSelect) directionSelect.value = payload.selectedDirection || selectedDirectionValue;
         const overlayVisible = Boolean(routeToggle?.checked) && payload.configured;
         applyRouteOverlay(payload.featureCollection || emptyRouteFeatureCollection, overlayVisible);
         setRouteControlsEnabled(Boolean(routeToggle?.checked) && payload.configured);
-
         if (!payload.configured) {
           setRouteStatus(payload.message || 'No GTFS ZIP has been uploaded yet.');
           return;
         }
-
         if (overlayVisible) {
           const selected = routeSelect?.value || 'all';
-          const selectedDirection = directionSelect?.value || 'all';
-          const directionLabel = selectedDirection === 'inbound'
-            ? 'Showing inbound trips only.'
-            : selectedDirection === 'outbound'
-              ? 'Showing outbound trips only.'
-              : 'Showing inbound and outbound trips.';
-          setRouteStatus(
-            `${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. ${selected === 'all' ? 'Showing all uploaded routes.' : `Showing route ${selected}.`} ${directionLabel}`,
-          );
+          const directionLabel = selectedDirectionValue === 'inbound' ? 'Showing inbound trips only.' : selectedDirectionValue === 'outbound' ? 'Showing outbound trips only.' : 'Showing inbound and outbound trips.';
+          setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. ${selected === 'all' ? 'Showing all uploaded routes.' : `Showing route ${selected}.`} ${directionLabel}`);
         } else {
           setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. Enable overlay to display paths.`);
         }
@@ -397,31 +439,34 @@ function initializeMap() {
     };
 
     const startVehicleRefresh = () => {
-      if (refreshIntervalId !== null) {
-        return;
-      }
-
+      if (refreshIntervalId !== null) return;
       setMessage(mapStatus, 'Loading vehicle positions...', 'success');
       refreshVehicles();
       refreshIntervalId = window.setInterval(refreshVehicles, 7000);
     };
 
-    if (map.loaded()) {
+    const initializeOverlays = () => {
+      loadTrackingStops();
       startVehicleRefresh();
       loadStaticRoutes();
+    };
+
+    if (map.loaded()) {
+      initializeOverlays();
     } else {
-      map.once('load', () => {
-        startVehicleRefresh();
-        loadStaticRoutes();
-      });
+      map.once('load', initializeOverlays);
       window.setTimeout(startVehicleRefresh, 1500);
     }
 
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
+    map.on('click', () => {
+      selectVehicle(null);
+    });
 
     setRouteControlsEnabled(false);
     setRouteStatus('Load a GTFS ZIP from Users to display static route paths.');
+    if (sidebarEmpty) setSidebarEmpty('Select a bus marker to inspect its service details.');
 
     if (routeToggle) {
       routeToggle.addEventListener('change', () => {
@@ -435,15 +480,15 @@ function initializeMap() {
       });
     }
 
-    if (routeSelect) {
-      routeSelect.addEventListener('change', () => {
-        loadStaticRoutes();
-      });
-    }
-
-    if (directionSelect) {
-      directionSelect.addEventListener('change', () => {
-        loadStaticRoutes();
+    if (routeSelect) routeSelect.addEventListener('change', () => loadStaticRoutes());
+    if (directionSelect) directionSelect.addEventListener('change', () => loadStaticRoutes());
+    if (stopToggle) {
+      stopToggle.addEventListener('change', () => {
+        if (!stopFeaturesLoaded) {
+          loadTrackingStops();
+          return;
+        }
+        applyStopOverlay(stopFeatureCollection, stopToggle.checked);
       });
     }
 
@@ -451,6 +496,98 @@ function initializeMap() {
   }
 
   mapContainer.innerHTML = '<div class="placeholder-card"><p>Mapbox token is not configured yet.</p></div>';
+}
+
+
+function initializeServiceOverview() {
+  const app = document.querySelector('#service-overview-app');
+  const refreshButton = document.querySelector('#refresh-service-overview');
+  const overviewStatus = document.querySelector('#service-overview-status');
+  const routeCountEl = document.querySelector('#service-overview-route-count');
+  const vehicleCountEl = document.querySelector('#service-overview-vehicle-count');
+  const updatedEl = document.querySelector('#service-overview-updated');
+  const listEl = document.querySelector('#service-overview-list');
+
+  if (!app || !refreshButton || !overviewStatus || !routeCountEl || !vehicleCountEl || !updatedEl || !listEl) {
+    return;
+  }
+
+  const renderOverview = (vehicles, sourceTimestamp) => {
+    const groups = new Map();
+    vehicles.forEach((vehicle) => {
+      const key = normalizeTrackingKey(vehicle.routeId || vehicle.routeLabel || vehicle.service || 'unknown');
+      if (!groups.has(key)) {
+        groups.set(key, {
+          routeId: vehicle.routeId || vehicle.service || 'Unknown',
+          routeLabel: formatRouteLabel(vehicle),
+          vehicles: [],
+        });
+      }
+      groups.get(key).vehicles.push(vehicle);
+    });
+
+    const orderedGroups = Array.from(groups.values()).sort((left, right) => left.routeLabel.localeCompare(right.routeLabel, undefined, { numeric: true, sensitivity: 'base' }));
+    routeCountEl.textContent = String(orderedGroups.length);
+    vehicleCountEl.textContent = String(vehicles.length);
+    updatedEl.textContent = formatFeedTime(sourceTimestamp);
+
+    if (!vehicles.length) {
+      listEl.innerHTML = '<p class="saved-empty">No active services are visible right now.</p>';
+      return;
+    }
+
+    listEl.innerHTML = orderedGroups.map((group) => {
+      const routeVehicleCount = group.vehicles.length;
+      const routeVehicles = group.vehicles.map((vehicle) => `
+        <article class="service-card">
+          <div class="service-card-head">
+            <div>
+              <p class="service-card-route">${escapeHtml(formatRouteLabel(vehicle))}</p>
+              <strong>${escapeHtml(String(vehicle.destination || 'Unknown destination'))}</strong>
+            </div>
+            <span class="sidebar-pill">${escapeHtml(formatVehicleDirection(vehicle.direction))}</span>
+          </div>
+          <dl class="service-detail-list">
+            <div><dt>Fleet number</dt><dd>${escapeHtml(String(vehicle.fleetNumber || 'Unknown'))}</dd></div>
+            <div><dt>Board number</dt><dd>${escapeHtml(formatBoardNumber(vehicle))}</dd></div>
+            <div><dt>Last stop passed</dt><dd>${escapeHtml(formatLastStop(vehicle.lastStopPassed))}</dd></div>
+          </dl>
+        </article>
+      `).join('');
+      return `
+        <section class="service-group">
+          <header class="service-group-head">
+            <div>
+              <p class="brand-subtitle">Route ${escapeHtml(group.routeLabel)}</p>
+              <h2>${escapeHtml(group.routeLabel)}</h2>
+            </div>
+            <span class="service-count-pill">${routeVehicleCount} active</span>
+          </header>
+          <div class="service-group-list">${routeVehicles}</div>
+        </section>
+      `;
+    }).join('');
+  };
+
+  const refreshOverview = async () => {
+    if (!window.OCC_ASSIST.trackingVehiclesUrl) {
+      setMessage(overviewStatus, 'Vehicle API is not configured.', 'error');
+      return;
+    }
+    try {
+      const response = await fetch(window.OCC_ASSIST.trackingVehiclesUrl, { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load active services.');
+      renderOverview(payload.vehicles || [], payload.sourceTimestamp || payload.refreshedAt);
+      setMessage(overviewStatus, `Loaded ${payload.vehicles?.length || 0} active vehicle${(payload.vehicles?.length || 0) === 1 ? '' : 's'}.`, 'success');
+    } catch (error) {
+      setMessage(overviewStatus, error.message || 'Unable to load active services.', 'error');
+      listEl.innerHTML = '<p class="saved-empty">Unable to load active services right now.</p>';
+    }
+  };
+
+  refreshButton.addEventListener('click', refreshOverview);
+  refreshOverview();
 }
 
 function formatFeedTime(value) {

@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+
+{% block title %}Service Overview{% endblock %}
+
+{% block content %}
+  <section class="content-panel fullwidth overview-page" id="service-overview-app">
+    <div class="panel-head tracking-head">
+      <div>
+        <p class="brand-subtitle">Active services</p>
+        <h1>Service Overview</h1>
+        <p class="section-copy tracking-copy">Grouped live services with route counts, destination, fleet number, direction, board number, and last stop passed.</p>
+      </div>
+      <a class="btn secondary compact" href="{{ url_for('tracking') }}">Back to Tracking</a>
+    </div>
+
+    <section class="overview-toolbar" aria-label="Service overview controls">
+      <button id="refresh-service-overview" class="btn secondary compact" type="button">Refresh</button>
+      <p id="service-overview-status" class="map-status" aria-live="polite"></p>
+    </section>
+
+    <section class="overview-summary" aria-label="Service summary">
+      <article class="overview-summary-card">
+        <p>Active routes</p>
+        <strong id="service-overview-route-count">0</strong>
+      </article>
+      <article class="overview-summary-card">
+        <p>Active vehicles</p>
+        <strong id="service-overview-vehicle-count">0</strong>
+      </article>
+      <article class="overview-summary-card">
+        <p>Last update</p>
+        <strong id="service-overview-updated">—</strong>
+      </article>
+    </section>
+
+    <div id="service-overview-list" class="service-overview-list" aria-live="polite">
+      <p class="saved-empty">Loading active services...</p>
+    </div>
+  </section>
+{% endblock %}

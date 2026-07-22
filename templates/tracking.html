@@ -11,36 +11,97 @@
 {% endblock %}
 
 {% block content %}
-  <section class="content-panel fullwidth">
-    <div class="panel-head">
-      <p class="brand-subtitle">Real-time routing</p>
-      <h1>Tracking</h1>
+  <section class="content-panel fullwidth tracking-panel" id="tracking-app">
+    <div class="panel-head tracking-head">
+      <div>
+        <p class="brand-subtitle">Real-time routing</p>
+        <h1>Tracking</h1>
+        <p class="section-copy tracking-copy">A full-screen live map with Greater Manchester stops, route overlays, and vehicle details.</p>
+      </div>
+      <a class="btn secondary compact" href="{{ url_for('service_overview') }}">Service Overview</a>
     </div>
-    <section class="map-toolbar" aria-label="Route display controls">
-      <label class="map-route-check" for="static-routes-toggle">
-        <input type="checkbox" id="static-routes-toggle" />
-        <span>Show static route paths (GTFS)</span>
-      </label>
-      <label class="compact-field" for="static-route-select">
-        <span>Select route</span>
-        <select id="static-route-select" disabled>
-          <option value="all">All uploaded routes</option>
-        </select>
-      </label>
-      <label class="compact-field" for="static-direction-select">
-        <span>Trip direction</span>
-        <select id="static-direction-select" disabled>
-          <option value="all">Inbound and outbound</option>
-          <option value="inbound">Inbound only</option>
-          <option value="outbound">Outbound only</option>
-        </select>
-      </label>
-      <p id="map-route-status" class="map-route-status" aria-live="polite"></p>
-    </section>
-    <div id="map" class="map-shell"></div>
-    <div class="map-meta">
-      <p class="map-note">Live BODS vehicle positions refresh every 7 seconds.</p>
-      <p id="map-status" class="map-status" aria-live="polite"></p>
+
+    <div class="tracking-layout">
+      <section class="tracking-map-panel" aria-label="Vehicle map">
+        <section class="map-toolbar tracking-toolbar" aria-label="Route display controls">
+          <label class="toggle-switch" for="static-routes-toggle">
+            <input type="checkbox" id="static-routes-toggle" />
+            <span class="toggle-visual" aria-hidden="true"></span>
+            <span>Show static route paths</span>
+          </label>
+          <label class="toggle-switch" for="bus-stops-toggle">
+            <input type="checkbox" id="bus-stops-toggle" checked />
+            <span class="toggle-visual" aria-hidden="true"></span>
+            <span>Show bus stops</span>
+          </label>
+          <label class="compact-field" for="static-route-select">
+            <span>Select route</span>
+            <select id="static-route-select" disabled>
+              <option value="all">All uploaded routes</option>
+            </select>
+          </label>
+          <label class="compact-field" for="static-direction-select">
+            <span>Trip direction</span>
+            <select id="static-direction-select" disabled>
+              <option value="all">Inbound and outbound</option>
+              <option value="inbound">Inbound only</option>
+              <option value="outbound">Outbound only</option>
+            </select>
+          </label>
+          <p id="map-route-status" class="map-route-status" aria-live="polite"></p>
+        </section>
+
+        <div class="map-shell map-shell-tracking">
+          <div id="map" class="map-canvas"></div>
+        </div>
+
+        <div class="map-meta">
+          <p class="map-note">Live BODS vehicle positions refresh every 7 seconds.</p>
+          <p id="map-status" class="map-status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <aside class="tracking-sidebar" id="tracking-sidebar" aria-live="polite">
+        <div class="tracking-sidebar-empty" id="tracking-sidebar-empty">
+          Select a bus marker to inspect its service details.
+        </div>
+        <article class="tracking-sidebar-panel" id="tracking-sidebar-panel" hidden>
+          <div class="section-row">
+            <div>
+              <p class="brand-subtitle">Selected vehicle</p>
+              <h2 id="tracking-selected-service">Service</h2>
+            </div>
+            <span id="tracking-selected-direction" class="sidebar-pill"></span>
+          </div>
+          <dl class="tracking-detail-list">
+            <div>
+              <dt>Service number</dt>
+              <dd id="tracking-selected-route">—</dd>
+            </div>
+            <div>
+              <dt>Fleet number</dt>
+              <dd id="tracking-selected-fleet">—</dd>
+            </div>
+            <div>
+              <dt>Inbound / outbound</dt>
+              <dd id="tracking-selected-direction-label">—</dd>
+            </div>
+            <div>
+              <dt>Destination</dt>
+              <dd id="tracking-selected-destination">—</dd>
+            </div>
+            <div>
+              <dt>Running board number</dt>
+              <dd id="tracking-selected-board">—</dd>
+            </div>
+            <div>
+              <dt>Last stop passed</dt>
+              <dd id="tracking-selected-last-stop">—</dd>
+            </div>
+          </dl>
+          <p id="tracking-selected-updated" class="sidebar-note"></p>
+        </article>
+      </aside>
     </div>
   </section>
 {% endblock %}

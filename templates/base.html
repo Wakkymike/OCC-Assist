@@ -16,7 +16,9 @@
         createUserUrl: {{ url_for('create_user') | tojson }},
         permissionsBaseUrl: '/api/users',
         trackingVehiclesUrl: {{ url_for('tracking_vehicles') | tojson }},
+        trackingStopsUrl: {{ tracking_stops_url | tojson }},
         trackingStaticRoutesUrl: {{ url_for('tracking_static_routes') | tojson }},
+        serviceOverviewUrl: {{ service_overview_url | tojson }},
         drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }},
         gtfsStatusUrl: {{ url_for('gtfs_status') | tojson }},
         gtfsUploadUrl: {{ url_for('upload_gtfs') | tojson }},
@@ -41,6 +43,7 @@
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
+            <a href="{{ url_for('service_overview') }}">Service Overview</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.driving_hours %}
             <a href="{{ url_for('driving_hours') }}">Driving Hours</a>
