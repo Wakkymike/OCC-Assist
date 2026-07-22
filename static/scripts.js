@@ -108,6 +108,35 @@ function formatBoardNumber(vehicle) {
   ).trim() || 'Unknown';
 }
 
+function formatJourneyNumber(vehicle) {
+  return String(
+    vehicle?.journeyCode
+      || vehicle?.vehicleJourneyRef
+      || vehicle?.journeyRef
+      || 'Unknown',
+  ).trim() || 'Unknown';
+}
+
+function formatJourneyOriginDeparture(vehicle) {
+  const rawTime = (
+    vehicle?.originAimedDepartureTime
+      || vehicle?.originDepartureTime
+      || vehicle?.firstStopDepartureTime
+      || ''
+  );
+  const value = String(rawTime).trim();
+  if (!value) {
+    return 'Not available';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 function formatLastStop(lastStop) {
   if (!lastStop) {
     return 'Not yet available';
@@ -139,6 +168,8 @@ function initializeMap() {
   const selectedDirectionLabel = document.querySelector('#tracking-selected-direction-label');
   const selectedDestination = document.querySelector('#tracking-selected-destination');
   const selectedBoard = document.querySelector('#tracking-selected-board');
+  const selectedJourney = document.querySelector('#tracking-selected-journey');
+  const selectedOriginDeparture = document.querySelector('#tracking-selected-origin-departure');
   const selectedLastStop = document.querySelector('#tracking-selected-last-stop');
   const selectedUpdated = document.querySelector('#tracking-selected-updated');
   const boltonCenter = [-2.428219, 53.576864];
@@ -193,6 +224,16 @@ function initializeMap() {
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
 
     const normalizeFleetKey = (fleetNumber) => String(fleetNumber || '').trim().toLowerCase();
+
+    const flashingJourneyNumbers = new Set([
+      '8001', '8002', '8301', '8302', '8601', '8602',
+      '1001', '1002', '1301', '1302', '1601', '1602',
+    ]);
+
+    const isFlashingJourney = (vehicle) => {
+      const journey = formatJourneyNumber(vehicle);
+      return flashingJourneyNumbers.has(String(journey || '').trim());
+    };
 
     const directionBadgeMarkup = (direction) => {
       const normalized = String(direction || '').trim().toLowerCase();
@@ -270,6 +311,12 @@ function initializeMap() {
       if (selectedDirectionLabel) selectedDirectionLabel.textContent = formatVehicleDirection(vehicle.direction);
       if (selectedDestination) selectedDestination.textContent = String(vehicle.destination || 'Unknown').trim() || 'Unknown';
       if (selectedBoard) selectedBoard.textContent = formatBoardNumber(vehicle);
+      const journeyNumber = formatJourneyNumber(vehicle);
+      if (selectedJourney) {
+        selectedJourney.textContent = journeyNumber;
+        selectedJourney.classList.toggle('journey-flash', isFlashingJourney(vehicle));
+      }
+      if (selectedOriginDeparture) selectedOriginDeparture.textContent = formatJourneyOriginDeparture(vehicle);
       if (selectedLastStop) selectedLastStop.textContent = formatLastStop(vehicle.lastStopPassed);
       if (selectedUpdated) selectedUpdated.textContent = `Updated ${formatFeedTime(vehicle.recordedAt || vehicle.sourceTimestamp || vehicle.refreshedAt)}`;
     };
@@ -296,6 +343,7 @@ function initializeMap() {
         state.flag.dataset.direction = direction;
         state.flag.innerHTML = buildVehicleFlagMarkup(vehicle);
         state.pin.textContent = fleetDisplay;
+        state.element.classList.toggle('is-flashing-journey', isFlashingJourney(vehicle));
         state.element.classList.toggle('is-selected', vehicle.id === selectedVehicleId);
         state.data = vehicle;
         return;
@@ -303,6 +351,7 @@ function initializeMap() {
 
       const markerElement = document.createElement('div');
       markerElement.className = 'vehicle-marker';
+      markerElement.classList.toggle('is-flashing-journey', isFlashingJourney(vehicle));
 
       const flag = document.createElement('div');
       flag.className = 'vehicle-flag';
@@ -625,6 +674,8 @@ function initializeServiceOverview() {
           </div>
           <dl class="service-detail-list">
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-fleet" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M8 9h8"/><path d="M8 12h8"/><path d="M8 15h5"/></svg><span>Fleet number</span></span></dt><dd>${escapeHtml(String(vehicle.fleetNumber || 'Unknown'))}</dd></div>
+            <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-journey" aria-hidden="true"><path d="M7 4h10"/><path d="M6 7h12"/><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 11h6"/><path d="M9 14h4"/></svg><span>Journey number</span></span></dt><dd>${escapeHtml(formatJourneyNumber(vehicle))}</dd></div>
+            <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-time" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Departed first stop</span></span></dt><dd>${escapeHtml(formatJourneyOriginDeparture(vehicle))}</dd></div>
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-board" aria-hidden="true"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5.5h6v3H9z"/><path d="M9 12h6"/><path d="M9 15h4"/></svg><span>Board number</span></span></dt><dd>${escapeHtml(formatBoardNumber(vehicle))}</dd></div>
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-stop" aria-hidden="true"><path d="M12 21s6-4.5 6-10a6 6 0 1 0-12 0c0 5.5 6 10 6 10z"/><path d="M10 9h4l-1.4 1.8L14 13h-4"/></svg><span>Last stop passed</span></span></dt><dd>${escapeHtml(formatLastStop(vehicle.lastStopPassed))}</dd></div>
           </dl>
