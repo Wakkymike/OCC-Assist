@@ -10,16 +10,12 @@
       window.OCC_ASSIST = {
         logoutUrl: {{ url_for('logout') | tojson }},
         sessionUrl: {{ url_for('session_info') | tojson }},
+        currentUser: {{ current_user | tojson }}
+        {% if current_user %},
         usersApiUrl: {{ url_for('list_users') | tojson }},
         createUserUrl: {{ url_for('create_user') | tojson }},
-        permissionsBaseUrl: '/api/users',
-        currentUser: {{ current_user | tojson }},
-        availablePages: {
-          liveUpdates: {{ url_for('live_updates') | tojson }},
-          tracking: {{ url_for('tracking') | tojson }},
-          drivingHours: {{ url_for('driving_hours') | tojson }},
-          users: {{ url_for('users_page') | tojson }}
-        }
+        permissionsBaseUrl: '/api/users'
+        {% endif %}
       };
     </script>
     <script defer src="{{ url_for('static', filename='scripts.js') }}"></script>
