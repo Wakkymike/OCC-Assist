@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+  <section class="content-panel">
+    <div class="panel-head">
+      <p class="brand-subtitle">Personal configuration</p>
+      <h1>Settings</h1>
+    </div>
+    <p class="section-copy">Add your RotaCloud iCal link to show your current and next shift on Daily Overview.</p>
+
+    <form id="settings-form" class="placeholder-card" novalidate>
+      <div class="field">
+        <label for="rotacloud-ical-url">RotaCloud iCal link</label>
+        <input
+          type="url"
+          id="rotacloud-ical-url"
+          name="rotacloudIcalUrl"
+          placeholder="https://..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <button class="btn primary" type="submit">Save Settings</button>
+      <div id="settings-message" class="message" aria-live="polite"></div>
+    </form>
+  </section>
+{% endblock %}

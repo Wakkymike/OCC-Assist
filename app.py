@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -21,7 +22,7 @@ DATABASE_PATH = INSTANCE_DIR / 'occ_assist.db'
 SUPERADMIN_EMAIL = os.environ.get('OCC_ASSIST_SUPERADMIN_EMAIL', 'michael.dodsworth@gonorthwest.co.uk')
 SUPERADMIN_PASSWORD = os.environ.get('OCC_ASSIST_SUPERADMIN_PASSWORD')
 PERMISSIONS = {
-    'live_updates': 'Live updates',
+    'live_updates': 'Daily overview',
     'tracking': 'Tracking',
     'driving_hours': 'Driving hours',
     'user_management': 'User management',
@@ -47,6 +48,7 @@ app.config['STATIC_VERSION'] = str(int(max((BASE_DIR / 'static' / 'scripts.js').
 
 
 SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
+LONDON_TZ = ZoneInfo('Europe/London')
 
 
 def get_db() -> sqlite3.Connection:
@@ -105,6 +107,13 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_driving_snapshots_user_epoch
         ON driving_snapshots (user_id, created_at_epoch DESC);
+
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            rotacloud_ical_url TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
         '''
     )
     database.commit()
@@ -272,6 +281,74 @@ def live_updates():
     return render_template('live-updates.html')
 
 
+@app.get('/settings')
+@login_required()
+def settings_page():
+    return render_template('settings.html')
+
+
+@app.get('/api/settings/rotacloud')
+@login_required()
+def get_rotacloud_setting():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+    url = get_user_rotacloud_ical_url(int(user['id']))
+    return jsonify({'ok': True, 'rotacloudIcalUrl': url})
+
+
+@app.put('/api/settings/rotacloud')
+@login_required()
+def update_rotacloud_setting():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    payload = request.get_json(silent=True) or {}
+    raw_url = str(payload.get('rotacloudIcalUrl', ''))
+    try:
+        normalized_url = validate_rotacloud_ical_url(raw_url)
+    except ValueError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 400
+
+    save_user_rotacloud_ical_url(int(user['id']), normalized_url)
+    return jsonify({'ok': True, 'rotacloudIcalUrl': normalized_url})
+
+
+@app.get('/api/overview/shifts')
+@login_required('live_updates')
+def daily_overview_shifts():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    ical_url = get_user_rotacloud_ical_url(int(user['id']))
+    if not ical_url:
+        return jsonify(
+            {
+                'ok': True,
+                'configured': False,
+                'message': 'No RotaCloud iCal link configured yet.',
+                'currentShift': None,
+                'nextShift': None,
+            }
+        )
+
+    try:
+        shifts = fetch_rotacloud_shift_overview(ical_url)
+    except RuntimeError as error:
+        return jsonify({'ok': False, 'configured': True, 'message': str(error)}), 503
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'currentShift': shifts['currentShift'],
+            'nextShift': shifts['nextShift'],
+        }
+    )
+
+
 @app.get('/tracking')
 @login_required('tracking')
 def tracking():
@@ -303,6 +380,199 @@ def parse_bods_timestamp(value: str) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def get_user_rotacloud_ical_url(user_id: int) -> str:
+    row = get_db().execute(
+        'SELECT rotacloud_ical_url FROM user_settings WHERE user_id = ?',
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return ''
+    return str(row['rotacloud_ical_url'] or '').strip()
+
+
+def validate_rotacloud_ical_url(value: str) -> str:
+    url = value.strip()
+    if not url:
+        return ''
+    if len(url) > 2048:
+        raise ValueError('The iCal link is too long.')
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        raise ValueError('Enter a valid http or https iCal link.')
+    return url
+
+
+def save_user_rotacloud_ical_url(user_id: int, url: str) -> None:
+    database = get_db()
+    database.execute(
+        '''
+        INSERT INTO user_settings (user_id, rotacloud_ical_url)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            rotacloud_ical_url = excluded.rotacloud_ical_url,
+            updated_at = CURRENT_TIMESTAMP
+        ''',
+        (user_id, url),
+    )
+    database.commit()
+
+
+def unfold_ical_lines(content: str) -> list[str]:
+    normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+    lines: list[str] = []
+    for raw_line in normalized.split('\n'):
+        if (raw_line.startswith(' ') or raw_line.startswith('\t')) and lines:
+            lines[-1] = lines[-1] + raw_line[1:]
+        else:
+            lines.append(raw_line)
+    return lines
+
+
+def parse_ical_property(line: str) -> tuple[str, dict[str, str], str] | None:
+    if ':' not in line:
+        return None
+    property_part, value = line.split(':', 1)
+    pieces = property_part.split(';')
+    name = pieces[0].strip().upper()
+    params: dict[str, str] = {}
+    for piece in pieces[1:]:
+        if '=' not in piece:
+            continue
+        param_key, param_value = piece.split('=', 1)
+        params[param_key.strip().upper()] = param_value.strip()
+    return name, params, value.strip()
+
+
+def parse_ical_datetime(value: str, params: dict[str, str]) -> datetime | None:
+    value_type = params.get('VALUE', '').upper()
+    tz_name = params.get('TZID', 'Europe/London')
+
+    if value_type == 'DATE':
+        try:
+            parsed = datetime.strptime(value, '%Y%m%d')
+            return parsed.replace(tzinfo=LONDON_TZ)
+        except ValueError:
+            return None
+
+    if value.endswith('Z'):
+        for fmt in ('%Y%m%dT%H%M%SZ', '%Y%m%dT%H%MZ'):
+            try:
+                parsed = datetime.strptime(value, fmt)
+                return parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
+
+    timezone_info = LONDON_TZ
+    try:
+        timezone_info = ZoneInfo(tz_name)
+    except Exception:
+        timezone_info = LONDON_TZ
+
+    for fmt in ('%Y%m%dT%H%M%S', '%Y%m%dT%H%M'):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return parsed.replace(tzinfo=timezone_info)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_ical_events(content: str) -> list[dict[str, object]]:
+    lines = unfold_ical_lines(content)
+    events: list[dict[str, object]] = []
+    in_event = False
+    event_values: dict[str, tuple[dict[str, str], str]] = {}
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == 'BEGIN:VEVENT':
+            in_event = True
+            event_values = {}
+            continue
+        if stripped == 'END:VEVENT':
+            if not in_event:
+                continue
+
+            dtstart_data = event_values.get('DTSTART')
+            dtend_data = event_values.get('DTEND')
+            summary_data = event_values.get('SUMMARY')
+            location_data = event_values.get('LOCATION')
+
+            if dtstart_data and dtend_data:
+                start = parse_ical_datetime(dtstart_data[1], dtstart_data[0])
+                end = parse_ical_datetime(dtend_data[1], dtend_data[0])
+                if start and end and end > start:
+                    events.append(
+                        {
+                            'start': start.astimezone(timezone.utc),
+                            'end': end.astimezone(timezone.utc),
+                            'summary': summary_data[1] if summary_data else 'Shift',
+                            'location': location_data[1] if location_data else '',
+                        }
+                    )
+
+            in_event = False
+            event_values = {}
+            continue
+
+        if not in_event:
+            continue
+
+        parsed_property = parse_ical_property(line)
+        if parsed_property is None:
+            continue
+        name, params, value = parsed_property
+        if name in {'DTSTART', 'DTEND', 'SUMMARY', 'LOCATION'}:
+            event_values[name] = (params, value)
+
+    return events
+
+
+def fetch_rotacloud_shift_overview(ical_url: str) -> dict[str, object]:
+    try:
+        with urlopen(ical_url, timeout=20) as response:
+            payload = response.read().decode('utf-8', errors='replace')
+    except HTTPError as error:
+        raise RuntimeError(f'RotaCloud iCal link returned HTTP {error.code}.') from error
+    except URLError as error:
+        raise RuntimeError('Unable to reach the RotaCloud iCal link right now.') from error
+
+    events = sorted(parse_ical_events(payload), key=lambda event: event['start'])
+    now_utc = datetime.now(timezone.utc)
+
+    current_shift = None
+    next_shift = None
+    for event in events:
+        start = event['start']
+        end = event['end']
+        if start <= now_utc < end:
+            current_shift = event
+        elif start >= now_utc and next_shift is None:
+            next_shift = event
+        if current_shift and next_shift:
+            break
+
+    def serialize_shift(shift: dict[str, object] | None) -> dict[str, object] | None:
+        if shift is None:
+            return None
+        start_local = shift['start'].astimezone(LONDON_TZ)
+        end_local = shift['end'].astimezone(LONDON_TZ)
+        return {
+            'summary': str(shift.get('summary') or 'Shift'),
+            'location': str(shift.get('location') or ''),
+            'startIso': shift['start'].isoformat(),
+            'endIso': shift['end'].isoformat(),
+            'windowLabel': f"{start_local.strftime('%a %d %b %H:%M')} - {end_local.strftime('%H:%M')}",
+        }
+
+    return {
+        'currentShift': serialize_shift(current_shift),
+        'nextShift': serialize_shift(next_shift),
+    }
 
 
 def parse_clock_to_minutes(value: str) -> int | None:

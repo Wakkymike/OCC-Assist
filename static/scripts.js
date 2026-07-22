@@ -59,6 +59,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeUsersPage();
   initializeMap();
   initializeDrivingHours();
+  initializeDailyOverview();
+  initializeSettingsPage();
 });
 
 function setMessage(element, message, variant = '') {
@@ -799,6 +801,133 @@ function initializeDrivingHours() {
     setMessage(formMessage, error.message || 'Unable to load saved snapshots.', 'error');
     renderSavedSnapshots();
   });
+}
+
+function initializeDailyOverview() {
+  const overviewRoot = document.querySelector('#daily-overview');
+  const refreshButton = document.querySelector('#refresh-overview');
+  const overviewMessage = document.querySelector('#overview-message');
+  const currentStatus = document.querySelector('#current-shift-status');
+  const currentWindow = document.querySelector('#current-shift-window');
+  const currentLocation = document.querySelector('#current-shift-location');
+  const nextStatus = document.querySelector('#next-shift-status');
+  const nextWindow = document.querySelector('#next-shift-window');
+  const nextLocation = document.querySelector('#next-shift-location');
+
+  if (
+    !overviewRoot || !refreshButton || !overviewMessage || !currentStatus || !currentWindow || !currentLocation
+    || !nextStatus || !nextWindow || !nextLocation
+  ) {
+    return;
+  }
+
+  const renderShiftCard = (target, shift, emptyLabel) => {
+    target.status.textContent = shift ? shift.summary : emptyLabel;
+    target.window.textContent = shift ? shift.windowLabel : '';
+    target.location.textContent = shift && shift.location ? shift.location : '';
+  };
+
+  const loadOverview = async () => {
+    setMessage(overviewMessage, 'Loading rota shifts...');
+    const response = await fetch(window.OCC_ASSIST.overviewShiftsUrl, { cache: 'no-store' });
+    const payload = await response.json();
+
+    if (!response.ok || !payload.ok) {
+      setMessage(overviewMessage, payload.message || 'Unable to load rota shifts right now.', 'error');
+      renderShiftCard(
+        { status: currentStatus, window: currentWindow, location: currentLocation },
+        null,
+        'Unavailable',
+      );
+      renderShiftCard(
+        { status: nextStatus, window: nextWindow, location: nextLocation },
+        null,
+        'Unavailable',
+      );
+      return;
+    }
+
+    if (!payload.configured) {
+      setMessage(overviewMessage, 'No RotaCloud iCal configured. Use the settings cog to add your link.', 'error');
+      renderShiftCard(
+        { status: currentStatus, window: currentWindow, location: currentLocation },
+        null,
+        'No active shift',
+      );
+      renderShiftCard(
+        { status: nextStatus, window: nextWindow, location: nextLocation },
+        null,
+        'No upcoming shift',
+      );
+      return;
+    }
+
+    renderShiftCard(
+      { status: currentStatus, window: currentWindow, location: currentLocation },
+      payload.currentShift,
+      'No active shift',
+    );
+    renderShiftCard(
+      { status: nextStatus, window: nextWindow, location: nextLocation },
+      payload.nextShift,
+      'No upcoming shift',
+    );
+    setMessage(overviewMessage, 'Shift data loaded.', 'success');
+  };
+
+  refreshButton.addEventListener('click', () => {
+    loadOverview();
+  });
+
+  loadOverview();
+}
+
+function initializeSettingsPage() {
+  const settingsForm = document.querySelector('#settings-form');
+  const settingsMessage = document.querySelector('#settings-message');
+  const icalInput = document.querySelector('#rotacloud-ical-url');
+
+  if (!settingsForm || !settingsMessage || !icalInput) {
+    return;
+  }
+
+  const loadSettings = async () => {
+    setMessage(settingsMessage, 'Loading settings...');
+    const response = await fetch(window.OCC_ASSIST.settingsRotacloudUrl, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      setMessage(settingsMessage, payload.message || 'Unable to load settings.', 'error');
+      return;
+    }
+
+    icalInput.value = payload.rotacloudIcalUrl || '';
+    setMessage(settingsMessage, '');
+  };
+
+  settingsForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setMessage(settingsMessage, 'Saving settings...');
+
+    const response = await fetch(window.OCC_ASSIST.updateSettingsRotacloudUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        rotacloudIcalUrl: icalInput.value.trim(),
+      }),
+    });
+
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      setMessage(settingsMessage, payload.message || 'Unable to save settings.', 'error');
+      return;
+    }
+
+    setMessage(settingsMessage, 'Settings saved.', 'success');
+  });
+
+  loadSettings();
 }
 
 function initializeUsersPage() {

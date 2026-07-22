@@ -16,7 +16,11 @@
         createUserUrl: {{ url_for('create_user') | tojson }},
         permissionsBaseUrl: '/api/users',
         trackingVehiclesUrl: {{ url_for('tracking_vehicles') | tojson }},
-        drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }}
+        drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }},
+        settingsRotacloudUrl: {{ url_for('get_rotacloud_setting') | tojson }},
+        updateSettingsRotacloudUrl: {{ url_for('update_rotacloud_setting') | tojson }},
+        overviewShiftsUrl: {{ url_for('daily_overview_shifts') | tojson }},
+        settingsPageUrl: {{ url_for('settings_page') | tojson }}
         {% endif %}
       };
     </script>
@@ -29,7 +33,7 @@
         <a class="brand-link" href="{{ url_for('live_updates') }}">OCC Assist</a>
         <nav class="top-nav">
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.live_updates %}
-            <a href="{{ url_for('live_updates') }}">Live Updates</a>
+            <a href="{{ url_for('live_updates') }}">Daily Overview</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
@@ -41,6 +45,7 @@
             <a href="{{ url_for('users_page') }}">Users</a>
           {% endif %}
         </nav>
+        <a class="settings-cog" href="{{ url_for('settings_page') }}" aria-label="Settings" title="Settings">&#9881;</a>
         <button class="btn nav-button" type="button" data-action="logout">Sign out</button>
       </header>
     {% endif %}

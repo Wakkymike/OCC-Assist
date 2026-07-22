@@ -83,6 +83,22 @@ body::before {
   text-decoration: none;
 }
 
+.settings-cog {
+  color: #eef3ff;
+  text-decoration: none;
+  font-size: 1.45rem;
+  line-height: 1;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-cog:hover {
+  color: var(--accent);
+  border-color: rgba(74, 144, 255, 0.55);
+}
+
 .brand-link {
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -167,7 +183,8 @@ body::before {
 }
 
 .field input[type='email'],
-.field input[type='password'] {
+.field input[type='password'],
+.field input[type='url'] {
   width: 100%;
   padding: 14px 16px;
   color: var(--text);
@@ -177,7 +194,8 @@ body::before {
 }
 
 .field input[type='email']::placeholder,
-.field input[type='password']::placeholder {
+.field input[type='password']::placeholder,
+.field input[type='url']::placeholder {
   color: rgba(255, 255, 255, 0.45);
 }
 
@@ -448,6 +466,45 @@ body::before {
   background: rgba(217, 73, 73, 0.18);
   border: 1px solid rgba(255, 136, 136, 0.48);
   color: #ffd2d2;
+}
+
+.overview-panel {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  padding: 22px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.overview-card {
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.overview-card h3 {
+  margin: 0 0 8px;
+  font-size: 1.02rem;
+}
+
+.overview-status {
+  margin: 0;
+  font-size: 1rem;
+  color: #eaf2ff;
+  font-weight: 600;
+}
+
+.overview-window,
+.overview-location {
+  margin: 8px 0 0;
+  color: var(--muted);
 }
 
 body.driving-hours-active {
@@ -766,7 +823,8 @@ body.driving-hours-active .shell {
 @media (max-width: 920px) {
   .hours-layout,
   .admin-layout,
-  .permission-list {
+  .permission-list,
+  .overview-grid {
     grid-template-columns: 1fr;
   }
 

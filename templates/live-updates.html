@@ -1,16 +1,35 @@
 {% extends 'base.html' %}
 
-{% block title %}Live Updates{% endblock %}
+{% block title %}Daily Overview{% endblock %}
 
 {% block content %}
   <section class="content-panel">
     <div class="panel-head">
       <p class="brand-subtitle">Secure operations hub</p>
-      <h1>Live Updates</h1>
+      <h1>Daily Overview</h1>
     </div>
-    <p class="section-copy">The Live Updates page is ready. Information and real-time feeds will be added here soon.</p>
-    <div class="placeholder-card">
-      <p>Use the navigation links above to move between the pages you are permitted to access.</p>
-    </div>
+    <p class="section-copy">Your rota summary from RotaCloud appears below. Configure your iCal link from the settings cog.</p>
+
+    <section id="daily-overview" class="overview-panel" aria-live="polite">
+      <div class="section-row">
+        <h2>Shift Summary</h2>
+        <button id="refresh-overview" class="btn secondary compact" type="button">Refresh</button>
+      </div>
+      <div id="overview-message" class="message"></div>
+      <div class="overview-grid">
+        <article class="overview-card">
+          <h3>Current Shift</h3>
+          <p id="current-shift-status" class="overview-status">Loading...</p>
+          <p id="current-shift-window" class="overview-window"></p>
+          <p id="current-shift-location" class="overview-location"></p>
+        </article>
+        <article class="overview-card">
+          <h3>Next Shift</h3>
+          <p id="next-shift-status" class="overview-status">Loading...</p>
+          <p id="next-shift-window" class="overview-window"></p>
+          <p id="next-shift-location" class="overview-location"></p>
+        </article>
+      </div>
+    </section>
   </section>
 {% endblock %}
