@@ -16,7 +16,6 @@
         createUserUrl: {{ url_for('create_user') | tojson }},
         permissionsBaseUrl: '/api/users',
         trackingVehiclesUrl: {{ url_for('tracking_vehicles') | tojson }},
-        metrolinkBoardUrl: {{ url_for('metrolink_board') | tojson }},
         drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }},
         settingsRotacloudUrl: {{ url_for('get_rotacloud_setting') | tojson }},
         updateSettingsRotacloudUrl: {{ url_for('update_rotacloud_setting') | tojson }},
@@ -36,9 +35,6 @@
         <nav class="top-nav">
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.live_updates %}
             <a href="{{ url_for('daily_overview') }}">Daily Overview</a>
-          {% endif %}
-          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.metrolink %}
-            <a href="{{ url_for('metrolink_page') }}">Metrolink</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
