@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
@@ -36,6 +38,13 @@ PAGE_PERMISSIONS = {
 }
 SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
+ROUTE_TRAIL_RETENTION_SECONDS = int(os.environ.get('OCC_ASSIST_ROUTE_TRAIL_RETENTION_SECONDS', '2700'))
+ROUTE_TRAIL_MAX_POINTS = int(os.environ.get('OCC_ASSIST_ROUTE_TRAIL_MAX_POINTS', '120'))
+GO_NORTH_WEST_OPERATOR_MARKERS = ('go north west', 'go-north-west', 'go_north_west', 'gonorthwest', 'gnw')
+
+
+VEHICLE_ROUTE_TRAILS: dict[str, list[dict[str, object]]] = {}
+VEHICLE_ROUTE_TRAILS_LOCK = Lock()
 
 
 app = Flask(__name__)
@@ -933,22 +942,196 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
             }
         )
 
+    update_vehicle_route_trails(items)
+
     return items, response_timestamp
+
+
+def parse_bool_query(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    lowered = str(value).strip().lower()
+    if lowered in {'1', 'true', 'yes', 'on'}:
+        return True
+    if lowered in {'0', 'false', 'no', 'off'}:
+        return False
+    return default
+
+
+def is_go_north_west_bee_vehicle(vehicle: dict[str, object]) -> bool:
+    service = str(vehicle.get('service') or '').strip()
+    if not service:
+        return False
+
+    operator = str(vehicle.get('operator') or '').strip().lower()
+    normalized = operator.replace(' ', '').replace('-', '').replace('_', '')
+    if normalized == 'gnw':
+        return True
+    return any(marker in operator for marker in GO_NORTH_WEST_OPERATOR_MARKERS)
+
+
+def route_sort_key(route: str) -> tuple[int, int, str]:
+    value = str(route or '').strip()
+    match = re.match(r'^(\d+)', value)
+    if match:
+        return (0, int(match.group(1)), value.lower())
+    return (1, 9999, value.lower())
+
+
+def get_recorded_at_epoch(vehicle: dict[str, object]) -> int:
+    recorded_at = str(vehicle.get('recordedAt') or '').strip()
+    recorded_time = parse_bods_timestamp(recorded_at)
+    if recorded_time is None:
+        return int(datetime.now(timezone.utc).timestamp())
+    if recorded_time.tzinfo is None:
+        recorded_time = recorded_time.replace(tzinfo=timezone.utc)
+    return int(recorded_time.timestamp())
+
+
+def update_vehicle_route_trails(vehicles: list[dict[str, object]]) -> None:
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    cutoff = now_epoch - ROUTE_TRAIL_RETENTION_SECONDS
+
+    with VEHICLE_ROUTE_TRAILS_LOCK:
+        for vehicle in vehicles:
+            if not is_go_north_west_bee_vehicle(vehicle):
+                continue
+
+            vehicle_id = str(vehicle.get('id') or '').strip()
+            if not vehicle_id:
+                continue
+
+            service = str(vehicle.get('service') or '').strip()
+            operator = str(vehicle.get('operator') or '').strip()
+            point = {
+                'service': service,
+                'operator': operator,
+                'latitude': float(vehicle.get('latitude') or 0.0),
+                'longitude': float(vehicle.get('longitude') or 0.0),
+                'recordedAtEpoch': get_recorded_at_epoch(vehicle),
+            }
+
+            trail = VEHICLE_ROUTE_TRAILS.setdefault(vehicle_id, [])
+            if trail:
+                previous = trail[-1]
+                if (
+                    previous.get('service') == service
+                    and abs(float(previous.get('latitude', 0.0)) - point['latitude']) < 0.00001
+                    and abs(float(previous.get('longitude', 0.0)) - point['longitude']) < 0.00001
+                ):
+                    previous['recordedAtEpoch'] = point['recordedAtEpoch']
+                else:
+                    trail.append(point)
+            else:
+                trail.append(point)
+
+            if len(trail) > ROUTE_TRAIL_MAX_POINTS:
+                del trail[:len(trail) - ROUTE_TRAIL_MAX_POINTS]
+
+        stale_vehicle_ids = []
+        for vehicle_id, trail in VEHICLE_ROUTE_TRAILS.items():
+            filtered = [entry for entry in trail if int(entry.get('recordedAtEpoch', 0)) >= cutoff]
+            if filtered:
+                VEHICLE_ROUTE_TRAILS[vehicle_id] = filtered
+            else:
+                stale_vehicle_ids.append(vehicle_id)
+
+        for vehicle_id in stale_vehicle_ids:
+            VEHICLE_ROUTE_TRAILS.pop(vehicle_id, None)
+
+
+def list_go_north_west_routes(vehicles: list[dict[str, object]]) -> list[str]:
+    routes = {
+        str(vehicle.get('service') or '').strip()
+        for vehicle in vehicles
+        if is_go_north_west_bee_vehicle(vehicle)
+    }
+    return sorted((route for route in routes if route), key=route_sort_key)
+
+
+def build_go_north_west_route_overlay(selected_route: str) -> dict[str, object]:
+    normalized_route = str(selected_route or '').strip().lower()
+    cutoff = int(datetime.now(timezone.utc).timestamp()) - ROUTE_TRAIL_RETENTION_SECONDS
+    features: list[dict[str, object]] = []
+
+    with VEHICLE_ROUTE_TRAILS_LOCK:
+        for vehicle_id, trail in VEHICLE_ROUTE_TRAILS.items():
+            if len(trail) < 2:
+                continue
+
+            latest = trail[-1]
+            service = str(latest.get('service') or '').strip()
+            if not service:
+                continue
+            if normalized_route not in {'', 'all'} and service.lower() != normalized_route:
+                continue
+            if not is_go_north_west_bee_vehicle(latest):
+                continue
+
+            line_points = [
+                [float(entry.get('longitude', 0.0)), float(entry.get('latitude', 0.0))]
+                for entry in trail
+                if int(entry.get('recordedAtEpoch', 0)) >= cutoff and str(entry.get('service') or '').strip() == service
+            ]
+            if len(line_points) < 2:
+                continue
+
+            features.append(
+                {
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'LineString',
+                        'coordinates': line_points,
+                    },
+                    'properties': {
+                        'vehicleId': vehicle_id,
+                        'service': service,
+                    },
+                }
+            )
+
+    return {
+        'type': 'FeatureCollection',
+        'features': features,
+    }
 
 
 @app.get('/api/tracking/vehicles')
 @login_required('tracking')
 def tracking_vehicles():
+    selected_route = str(request.args.get('route', 'all') or 'all').strip()
+    show_route_overlay = parse_bool_query(request.args.get('showRouteOverlay'), default=False)
+    only_selected_route_vehicles = parse_bool_query(request.args.get('onlySelectedRouteVehicles'), default=False)
+
     try:
         vehicles, source_timestamp = fetch_bods_vehicles()
     except RuntimeError as error:
         return jsonify({'ok': False, 'message': str(error)}), 503
 
+    go_north_west_routes = list_go_north_west_routes(vehicles)
+    if selected_route and selected_route.lower() != 'all' and selected_route not in go_north_west_routes:
+        selected_route = 'all'
+
+    filtered_vehicles = vehicles
+    if only_selected_route_vehicles and selected_route.lower() != 'all':
+        filtered_vehicles = [
+            vehicle
+            for vehicle in vehicles
+            if is_go_north_west_bee_vehicle(vehicle) and str(vehicle.get('service') or '').strip() == selected_route
+        ]
+
+    route_overlay = {'type': 'FeatureCollection', 'features': []}
+    if show_route_overlay:
+        route_overlay = build_go_north_west_route_overlay(selected_route)
+
     return jsonify(
         {
             'ok': True,
-            'vehicles': vehicles,
+            'vehicles': filtered_vehicles,
             'sourceTimestamp': source_timestamp,
+            'goNorthWestRoutes': go_north_west_routes,
+            'selectedRoute': selected_route,
+            'routeOverlay': route_overlay,
             'refreshedAt': datetime.now(timezone.utc).isoformat(),
         }
     )

@@ -16,6 +16,23 @@
       <p class="brand-subtitle">Real-time routing</p>
       <h1>Tracking</h1>
     </div>
+    <section class="map-toolbar" aria-label="Route display controls">
+      <label class="map-route-check" for="gnw-routes-toggle">
+        <input type="checkbox" id="gnw-routes-toggle" />
+        <span>Show Go North West Bee routes</span>
+      </label>
+      <label class="compact-field" for="gnw-route-select">
+        <span>Select route</span>
+        <select id="gnw-route-select" disabled>
+          <option value="all">All Go North West routes</option>
+        </select>
+      </label>
+      <label class="map-route-check" for="gnw-route-vehicles-only">
+        <input type="checkbox" id="gnw-route-vehicles-only" disabled />
+        <span>Show only selected route vehicles</span>
+      </label>
+      <p id="map-route-status" class="map-route-status" aria-live="polite"></p>
+    </section>
     <div id="map" class="map-shell"></div>
     <div class="map-meta">
       <p class="map-note">Live BODS vehicle positions refresh every 7 seconds.</p>

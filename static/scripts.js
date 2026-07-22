@@ -75,6 +75,10 @@ function setMessage(element, message, variant = '') {
 function initializeMap() {
   const mapContainer = document.querySelector('#map');
   const mapStatus = document.querySelector('#map-status');
+  const routeToggle = document.querySelector('#gnw-routes-toggle');
+  const routeSelect = document.querySelector('#gnw-route-select');
+  const routeVehiclesOnly = document.querySelector('#gnw-route-vehicles-only');
+  const routeStatus = document.querySelector('#map-route-status');
   const boltonCenter = [-2.428219, 53.576864];
   const staleAfterMs = 120_000;
   if (!mapContainer || typeof mapboxgl === 'undefined') {
@@ -92,6 +96,13 @@ function initializeMap() {
 
     const vehicleStates = new Map();
     let refreshIntervalId = null;
+    const routeSourceId = 'gnw-route-overlay-source';
+    const routeOutlineLayerId = 'gnw-route-overlay-outline';
+    const routeLayerId = 'gnw-route-overlay';
+    const emptyRouteFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [],
+    };
 
     const buildVehicleSignature = (vehicle) => {
       return [
@@ -150,6 +161,108 @@ function initializeMap() {
       const flagOpacity = 0.18 + normalized * 0.82;
       mapContainer.style.setProperty('--vehicle-flag-scale', flagScale.toFixed(2));
       mapContainer.style.setProperty('--vehicle-flag-opacity', flagOpacity.toFixed(2));
+    };
+
+    const readRouteState = () => ({
+      showRouteOverlay: Boolean(routeToggle?.checked),
+      selectedRoute: routeSelect?.value || 'all',
+      onlySelectedRouteVehicles: Boolean(routeVehiclesOnly?.checked),
+    });
+
+    const setRouteStatus = (message) => {
+      if (!routeStatus) {
+        return;
+      }
+      routeStatus.textContent = message;
+    };
+
+    const escapeHtml = (value) => String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+
+    const setRouteControlsEnabled = (enabled) => {
+      if (routeSelect) {
+        routeSelect.disabled = !enabled;
+      }
+      if (routeVehiclesOnly) {
+        routeVehiclesOnly.disabled = !enabled;
+      }
+      if (!enabled && routeVehiclesOnly) {
+        routeVehiclesOnly.checked = false;
+      }
+    };
+
+    const ensureRouteOverlayLayers = () => {
+      if (map.getSource(routeSourceId)) {
+        return;
+      }
+
+      map.addSource(routeSourceId, {
+        type: 'geojson',
+        data: emptyRouteFeatureCollection,
+      });
+
+      map.addLayer({
+        id: routeOutlineLayerId,
+        type: 'line',
+        source: routeSourceId,
+        paint: {
+          'line-color': '#07121b',
+          'line-width': 8,
+          'line-opacity': 0.88,
+        },
+      });
+
+      map.addLayer({
+        id: routeLayerId,
+        type: 'line',
+        source: routeSourceId,
+        paint: {
+          'line-color': '#35deff',
+          'line-width': 4,
+          'line-opacity': 0.95,
+        },
+      });
+    };
+
+    const applyRouteOverlay = (featureCollection, showOverlay) => {
+      if (!map.isStyleLoaded()) {
+        return;
+      }
+
+      ensureRouteOverlayLayers();
+      const source = map.getSource(routeSourceId);
+      if (!source) {
+        return;
+      }
+
+      source.setData(showOverlay ? featureCollection : emptyRouteFeatureCollection);
+
+      const visibility = showOverlay ? 'visible' : 'none';
+      if (map.getLayer(routeOutlineLayerId)) {
+        map.setLayoutProperty(routeOutlineLayerId, 'visibility', visibility);
+      }
+      if (map.getLayer(routeLayerId)) {
+        map.setLayoutProperty(routeLayerId, 'visibility', visibility);
+      }
+    };
+
+    const updateRouteOptions = (routes, selectedRoute) => {
+      if (!routeSelect) {
+        return;
+      }
+
+      const currentSelection = selectedRoute || routeSelect.value || 'all';
+      routeSelect.innerHTML = [
+        '<option value="all">All Go North West routes</option>',
+        ...routes.map((route) => `<option value="${escapeHtml(route)}">${escapeHtml(route)}</option>`),
+      ].join('');
+
+      const canKeepSelection = currentSelection === 'all' || routes.includes(currentSelection);
+      routeSelect.value = canKeepSelection ? currentSelection : 'all';
     };
 
     const renderVehicles = (vehicles, observedAtMs) => {
@@ -212,19 +325,44 @@ function initializeMap() {
       }
 
       try {
-        const response = await fetch(window.OCC_ASSIST.trackingVehiclesUrl, { cache: 'no-store' });
+        const routeState = readRouteState();
+        const query = new URLSearchParams({
+          route: routeState.selectedRoute,
+          showRouteOverlay: routeState.showRouteOverlay ? '1' : '0',
+          onlySelectedRouteVehicles: routeState.onlySelectedRouteVehicles ? '1' : '0',
+        });
+        const response = await fetch(`${window.OCC_ASSIST.trackingVehiclesUrl}?${query.toString()}`, { cache: 'no-store' });
         const payload = await response.json();
         if (!response.ok || !payload.ok) {
           throw new Error(payload.message || 'Unable to load vehicle positions.');
         }
 
+        const routes = payload.goNorthWestRoutes || [];
+        updateRouteOptions(routes, payload.selectedRoute || 'all');
+
         const observedAtMs = Date.parse(payload.sourceTimestamp || payload.refreshedAt) || Date.now();
         const activeVehicles = payload.vehicles || [];
 
         const visibleVehicleCount = renderVehicles(activeVehicles, observedAtMs);
+        applyRouteOverlay(payload.routeOverlay || emptyRouteFeatureCollection, routeState.showRouteOverlay);
+
+        if (routeToggle) {
+          setRouteControlsEnabled(routeToggle.checked);
+        }
+
+        if (routeState.showRouteOverlay) {
+          const selected = routeSelect?.value || 'all';
+          setRouteStatus(
+            `${routes.length} Go North West route${routes.length === 1 ? '' : 's'} available. ${selected === 'all' ? 'Showing all route trails.' : `Showing route ${selected}.`}`,
+          );
+        } else {
+          setRouteStatus(`${routes.length} Go North West route${routes.length === 1 ? '' : 's'} available.`);
+        }
+
         const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
         setMessage(mapStatus, `${visibleVehicleCount} live vehicle${visibleVehicleCount === 1 ? '' : 's'} updated ${updated}.`, 'success');
       } catch (error) {
+        applyRouteOverlay(emptyRouteFeatureCollection, false);
         setMessage(mapStatus, error.message || 'Unable to load vehicle positions.', 'error');
       }
     };
@@ -248,6 +386,30 @@ function initializeMap() {
 
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
+
+    setRouteControlsEnabled(Boolean(routeToggle?.checked));
+
+    if (routeToggle) {
+      routeToggle.addEventListener('change', () => {
+        setRouteControlsEnabled(routeToggle.checked);
+        if (!routeToggle.checked) {
+          applyRouteOverlay(emptyRouteFeatureCollection, false);
+        }
+        refreshVehicles();
+      });
+    }
+
+    if (routeSelect) {
+      routeSelect.addEventListener('change', () => {
+        refreshVehicles();
+      });
+    }
+
+    if (routeVehiclesOnly) {
+      routeVehiclesOnly.addEventListener('change', () => {
+        refreshVehicles();
+      });
+    }
 
     return;
   }
