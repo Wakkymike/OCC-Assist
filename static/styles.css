@@ -463,6 +463,52 @@ body::before {
   font-size: 0.8rem;
 }
 
+.label-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.info-icon {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.9;
+  flex: none;
+}
+
+.icon-route {
+  color: #8fc5ff;
+}
+
+.icon-fleet {
+  color: #9de8ff;
+}
+
+.icon-direction {
+  color: #ffd38f;
+}
+
+.icon-destination {
+  color: #8ef1bd;
+}
+
+.icon-board {
+  color: #c8d7ff;
+}
+
+.icon-stop {
+  color: #f4b6ff;
+}
+
+.icon-time {
+  color: #9fd8ff;
+}
+
 .tracking-detail-list dd,
 .service-detail-list dd {
   margin: 0;

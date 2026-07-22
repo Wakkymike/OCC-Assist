@@ -624,9 +624,9 @@ function initializeServiceOverview() {
             <span class="sidebar-pill">${escapeHtml(formatVehicleDirection(vehicle.direction))}</span>
           </div>
           <dl class="service-detail-list">
-            <div><dt>Fleet number</dt><dd>${escapeHtml(String(vehicle.fleetNumber || 'Unknown'))}</dd></div>
-            <div><dt>Board number</dt><dd>${escapeHtml(formatBoardNumber(vehicle))}</dd></div>
-            <div><dt>Last stop passed</dt><dd>${escapeHtml(formatLastStop(vehicle.lastStopPassed))}</dd></div>
+            <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-fleet" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M8 9h8"/><path d="M8 12h8"/><path d="M8 15h5"/></svg><span>Fleet number</span></span></dt><dd>${escapeHtml(String(vehicle.fleetNumber || 'Unknown'))}</dd></div>
+            <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-board" aria-hidden="true"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5.5h6v3H9z"/><path d="M9 12h6"/><path d="M9 15h4"/></svg><span>Board number</span></span></dt><dd>${escapeHtml(formatBoardNumber(vehicle))}</dd></div>
+            <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-stop" aria-hidden="true"><path d="M12 21s6-4.5 6-10a6 6 0 1 0-12 0c0 5.5 6 10 6 10z"/><path d="M10 9h4l-1.4 1.8L14 13h-4"/></svg><span>Last stop passed</span></span></dt><dd>${escapeHtml(formatLastStop(vehicle.lastStopPassed))}</dd></div>
           </dl>
         </article>
       `).join('');
