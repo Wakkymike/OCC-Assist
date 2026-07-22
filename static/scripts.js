@@ -87,8 +87,58 @@ function initializeMap() {
       zoom: 12,
     });
 
-    const markers = new Map();
+    const vehicleStates = new Map();
     let refreshIntervalId = null;
+
+    const buildVehicleSignature = (vehicle) => {
+      return [
+        vehicle.recordedAt,
+        vehicle.latitude,
+        vehicle.longitude,
+        vehicle.service,
+        vehicle.destination,
+        vehicle.direction,
+        vehicle.fleetNumber,
+      ].join('|');
+    };
+
+    const removeVehicleMarker = (state) => {
+      if (!state.marker) {
+        return;
+      }
+
+      state.marker.remove();
+      state.marker = null;
+      state.flag = null;
+    };
+
+    const ensureVehicleMarker = (state, lngLat, labelText, direction, service) => {
+      if (state.marker) {
+        state.marker.setLngLat(lngLat);
+        state.flag.textContent = labelText;
+        state.flag.dataset.direction = direction;
+        return;
+      }
+
+      const markerElement = document.createElement('div');
+      markerElement.className = 'vehicle-marker';
+
+      const flag = document.createElement('div');
+      flag.className = 'vehicle-flag';
+      flag.dataset.direction = direction;
+      flag.textContent = labelText;
+
+      const pin = document.createElement('div');
+      pin.className = 'vehicle-pin';
+      pin.textContent = service;
+
+      markerElement.append(flag, pin);
+
+      state.flag = flag;
+      state.marker = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' })
+        .setLngLat(lngLat)
+        .addTo(map);
+    };
 
     const applyZoomStyling = () => {
       const zoom = map.getZoom();
@@ -101,10 +151,12 @@ function initializeMap() {
 
     const renderVehicles = (vehicles, observedAtMs) => {
       const activeIds = new Set();
+      let visibleVehicleCount = 0;
 
       vehicles.forEach((vehicle) => {
         activeIds.add(vehicle.id);
         const lngLat = [vehicle.longitude, vehicle.latitude];
+        const signature = buildVehicleSignature(vehicle);
 
         const labelText = [
           `Service ${vehicle.service}`,
@@ -113,42 +165,42 @@ function initializeMap() {
           `Fleet ${vehicle.fleetNumber}`,
         ].join(' | ');
 
-        if (markers.has(vehicle.id)) {
-          const markerState = markers.get(vehicle.id);
-          markerState.marker.setLngLat(lngLat);
-          markerState.flag.textContent = labelText;
-          markerState.flag.dataset.direction = vehicle.direction;
-          markerState.lastSeenAtMs = observedAtMs;
+        if (vehicleStates.has(vehicle.id)) {
+          const vehicleState = vehicleStates.get(vehicle.id);
+          if (vehicleState.lastSignature !== signature) {
+            vehicleState.lastSignature = signature;
+            vehicleState.lastFreshAtMs = observedAtMs;
+          }
+
+          if (observedAtMs - vehicleState.lastFreshAtMs > staleAfterMs) {
+            removeVehicleMarker(vehicleState);
+            return;
+          }
+
+          ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, vehicle.service);
+          visibleVehicleCount += 1;
           return;
         }
 
-        const markerElement = document.createElement('div');
-        markerElement.className = 'vehicle-marker';
-
-        const flag = document.createElement('div');
-        flag.className = 'vehicle-flag';
-        flag.dataset.direction = vehicle.direction;
-        flag.textContent = labelText;
-
-        const pin = document.createElement('div');
-        pin.className = 'vehicle-pin';
-        pin.textContent = vehicle.service;
-
-        markerElement.append(flag, pin);
-
-        const marker = new mapboxgl.Marker({ element: markerElement, anchor: 'bottom' })
-          .setLngLat(lngLat)
-          .addTo(map);
-
-        markers.set(vehicle.id, { marker, flag, lastSeenAtMs: observedAtMs });
+        const vehicleState = {
+          marker: null,
+          flag: null,
+          lastFreshAtMs: observedAtMs,
+          lastSignature: signature,
+        };
+        ensureVehicleMarker(vehicleState, lngLat, labelText, vehicle.direction, vehicle.service);
+        vehicleStates.set(vehicle.id, vehicleState);
+        visibleVehicleCount += 1;
       });
 
-      markers.forEach((markerState, markerId) => {
-        if (!activeIds.has(markerId) && observedAtMs - markerState.lastSeenAtMs > staleAfterMs) {
-          markerState.marker.remove();
-          markers.delete(markerId);
+      vehicleStates.forEach((vehicleState, vehicleId) => {
+        if (!activeIds.has(vehicleId) && observedAtMs - vehicleState.lastFreshAtMs > staleAfterMs) {
+          removeVehicleMarker(vehicleState);
+          vehicleStates.delete(vehicleId);
         }
       });
+
+      return visibleVehicleCount;
     };
 
     const refreshVehicles = async () => {
@@ -166,9 +218,9 @@ function initializeMap() {
         const observedAtMs = Date.parse(payload.sourceTimestamp || payload.refreshedAt) || Date.now();
         const activeVehicles = payload.vehicles || [];
 
-        renderVehicles(activeVehicles, observedAtMs);
+        const visibleVehicleCount = renderVehicles(activeVehicles, observedAtMs);
         const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
-        setMessage(mapStatus, `${activeVehicles.length} active vehicle${activeVehicles.length === 1 ? '' : 's'} updated ${updated}.`, 'success');
+        setMessage(mapStatus, `${visibleVehicleCount} live vehicle${visibleVehicleCount === 1 ? '' : 's'} updated ${updated}.`, 'success');
       } catch (error) {
         setMessage(mapStatus, error.message || 'Unable to load vehicle positions.', 'error');
       }
