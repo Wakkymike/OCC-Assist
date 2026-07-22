@@ -39,6 +39,7 @@ app.config['SECRET_KEY'] = os.environ.get('OCC_ASSIST_SECRET_KEY', 'change-me-be
 app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
 app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
+app.config['STATIC_VERSION'] = str(int(max((BASE_DIR / 'static' / 'scripts.js').stat().st_mtime, (BASE_DIR / 'static' / 'styles.css').stat().st_mtime)))
 
 
 SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
@@ -177,6 +178,7 @@ def inject_user_context() -> dict[str, object]:
     return {
         'current_user': user,
         'mapbox_token': app.config['MAPBOX_TOKEN'],
+        'static_version': app.config['STATIC_VERSION'],
         'permissions_map': PERMISSIONS,
         'page_permissions': PAGE_PERMISSIONS,
     }
