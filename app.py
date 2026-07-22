@@ -46,6 +46,7 @@ GTFS_UPLOAD_PATH = GTFS_DIR / 'latest-gtfs.zip'
 GTFS_EXTRACT_DIR = GTFS_DIR / 'extracted'
 GTFS_CACHE_PATH = GTFS_DIR / 'routes-cache.json'
 GTFS_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_GTFS_MAX_UPLOAD_BYTES', '60000000'))
+GTFS_ALLOWED_AGENCY_ID = str(os.environ.get('OCC_ASSIST_GTFS_ALLOWED_AGENCY_ID', 'OP11122')).strip()
 
 
 app = Flask(__name__)
@@ -1020,18 +1021,28 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     route_meta: dict[str, dict[str, str]] = {}
     for row in route_rows:
         route_id = str(row.get('route_id') or '').strip()
+        agency_id = str(row.get('agency_id') or '').strip()
         if not route_id:
+            continue
+        if GTFS_ALLOWED_AGENCY_ID and agency_id != GTFS_ALLOWED_AGENCY_ID:
             continue
         route_meta[route_id] = {
             'shortName': str(row.get('route_short_name') or '').strip(),
             'longName': str(row.get('route_long_name') or '').strip(),
         }
 
+    if GTFS_ALLOWED_AGENCY_ID and not route_meta:
+        raise ValueError(f'No routes found for agency ID {GTFS_ALLOWED_AGENCY_ID} in this GTFS ZIP.')
+
+    allowed_route_ids = set(route_meta.keys())
+
     route_shapes: dict[str, set[str]] = {}
     for row in trip_rows:
         route_id = str(row.get('route_id') or '').strip()
         shape_id = str(row.get('shape_id') or '').strip()
         if not route_id or not shape_id:
+            continue
+        if allowed_route_ids and route_id not in allowed_route_ids:
             continue
         route_shapes.setdefault(route_id, set()).add(shape_id)
 
