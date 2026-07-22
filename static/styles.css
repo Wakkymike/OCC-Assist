@@ -830,16 +830,16 @@ body.driving-hours-active .shell {
   gap: 18px;
 }
 
-.txc-upload-card {
+.gtfs-upload-card {
   margin-top: 20px;
 }
 
-.txc-upload-form {
+.gtfs-upload-form {
   display: grid;
   gap: 12px;
 }
 
-.txc-upload-form input[type='file'] {
+.gtfs-upload-form input[type='file'] {
   width: 100%;
   padding: 12px 14px;
   color: var(--text);

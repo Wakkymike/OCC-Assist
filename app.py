@@ -3,10 +3,14 @@ from __future__ import annotations
 import os
 import re
 import json
+import csv
+import io
+import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+import zipfile
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
@@ -37,10 +41,11 @@ PAGE_PERMISSIONS = {
 }
 SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
-TRANSXCHANGE_DIR = INSTANCE_DIR / 'transxchange'
-TRANSXCHANGE_UPLOAD_PATH = TRANSXCHANGE_DIR / 'latest-transxchange.xml'
-TRANSXCHANGE_CACHE_PATH = TRANSXCHANGE_DIR / 'routes-cache.json'
-TRANSXCHANGE_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_UPLOAD_BYTES', '25000000'))
+GTFS_DIR = INSTANCE_DIR / 'gtfs'
+GTFS_UPLOAD_PATH = GTFS_DIR / 'latest-gtfs.zip'
+GTFS_EXTRACT_DIR = GTFS_DIR / 'extracted'
+GTFS_CACHE_PATH = GTFS_DIR / 'routes-cache.json'
+GTFS_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_GTFS_MAX_UPLOAD_BYTES', '60000000'))
 
 
 app = Flask(__name__)
@@ -949,144 +954,158 @@ def route_sort_key(route: str) -> tuple[int, int, str]:
     return (1, 9999, value.lower())
 
 
-def xml_local_name(tag: str) -> str:
-    if '}' in tag:
-        return tag.split('}', 1)[1]
-    return tag
+def read_gtfs_rows(file_path: Path) -> list[dict[str, str]]:
+    with file_path.open('r', encoding='utf-8-sig', errors='replace', newline='') as handle:
+        reader = csv.DictReader(handle)
+        return [
+            {str(key or '').strip(): str(value or '').strip() for key, value in row.items()}
+            for row in reader
+        ]
 
 
-def iter_by_local_name(node: ET.Element, name: str):
-    for element in node.iter():
-        if xml_local_name(element.tag) == name:
-            yield element
+def find_gtfs_file(extracted_dir: Path, filename: str) -> Path | None:
+    target = filename.lower()
+    for path in extracted_dir.rglob('*'):
+        if not path.is_file():
+            continue
+        if path.name.lower() == target:
+            return path
+    return None
 
 
-def get_first_child_text(node: ET.Element, name: str) -> str:
-    for child in node:
-        if xml_local_name(child.tag) == name and child.text:
-            return child.text.strip()
-    return ''
+def unzip_gtfs_archive(zip_bytes: bytes) -> Path:
+    GTFS_DIR.mkdir(parents=True, exist_ok=True)
+    if GTFS_EXTRACT_DIR.exists():
+        shutil.rmtree(GTFS_EXTRACT_DIR)
+    GTFS_EXTRACT_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile as error:
+        raise ValueError('The uploaded file is not a valid ZIP archive.') from error
+
+    with archive:
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+
+            member_name = member.filename.replace('\\', '/')
+            if member_name.startswith('/'):
+                continue
+
+            destination = (GTFS_EXTRACT_DIR / member_name).resolve()
+            root = GTFS_EXTRACT_DIR.resolve()
+            if not str(destination).startswith(str(root)):
+                continue
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source_handle:
+                destination.write_bytes(source_handle.read())
+
+    return GTFS_EXTRACT_DIR
 
 
-def extract_route_link_coordinates(route_link: ET.Element) -> list[list[float]]:
-    points: list[list[float]] = []
-    for location in iter_by_local_name(route_link, 'Location'):
-        lon_text = get_first_child_text(location, 'Longitude')
-        lat_text = get_first_child_text(location, 'Latitude')
+def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
+    routes_path = find_gtfs_file(extracted_dir, 'routes.txt')
+    trips_path = find_gtfs_file(extracted_dir, 'trips.txt')
+    shapes_path = find_gtfs_file(extracted_dir, 'shapes.txt')
+
+    if routes_path is None or trips_path is None or shapes_path is None:
+        raise ValueError('GTFS ZIP must include routes.txt, trips.txt, and shapes.txt.')
+
+    route_rows = read_gtfs_rows(routes_path)
+    trip_rows = read_gtfs_rows(trips_path)
+    shape_rows = read_gtfs_rows(shapes_path)
+
+    route_meta: dict[str, dict[str, str]] = {}
+    for row in route_rows:
+        route_id = str(row.get('route_id') or '').strip()
+        if not route_id:
+            continue
+        route_meta[route_id] = {
+            'shortName': str(row.get('route_short_name') or '').strip(),
+            'longName': str(row.get('route_long_name') or '').strip(),
+        }
+
+    route_shapes: dict[str, set[str]] = {}
+    for row in trip_rows:
+        route_id = str(row.get('route_id') or '').strip()
+        shape_id = str(row.get('shape_id') or '').strip()
+        if not route_id or not shape_id:
+            continue
+        route_shapes.setdefault(route_id, set()).add(shape_id)
+
+    shapes: dict[str, list[tuple[float, float, int]]] = {}
+    for row in shape_rows:
+        shape_id = str(row.get('shape_id') or '').strip()
+        if not shape_id:
+            continue
+
+        lon_text = str(row.get('shape_pt_lon') or '').strip()
+        lat_text = str(row.get('shape_pt_lat') or '').strip()
+        sequence_text = str(row.get('shape_pt_sequence') or '').strip()
         if not lon_text or not lat_text:
             continue
         try:
             longitude = float(lon_text)
             latitude = float(lat_text)
+            sequence = int(float(sequence_text or '0'))
         except ValueError:
             continue
-        points.append([longitude, latitude])
-    return points
 
-
-def parse_transxchange_routes(xml_bytes: bytes) -> dict[str, object]:
-    try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError as error:
-        raise ValueError('Unable to parse TransXChange XML. Check the file and try again.') from error
-
-    route_sections: dict[str, list[str]] = {}
-    for section in iter_by_local_name(root, 'RouteSection'):
-        section_id = str(section.attrib.get('id') or '').strip()
-        if not section_id:
-            continue
-        link_refs = [
-            str(route_link_ref.text or '').strip()
-            for route_link_ref in iter_by_local_name(section, 'RouteLinkRef')
-            if str(route_link_ref.text or '').strip()
-        ]
-        route_sections[section_id] = link_refs
-
-    route_links: dict[str, list[list[float]]] = {}
-    for route_link in iter_by_local_name(root, 'RouteLink'):
-        route_link_id = str(route_link.attrib.get('id') or '').strip()
-        if not route_link_id:
-            continue
-        coordinates = extract_route_link_coordinates(route_link)
-        if len(coordinates) >= 2:
-            route_links[route_link_id] = coordinates
-
-    routes: dict[str, list[str]] = {}
-    for route in iter_by_local_name(root, 'Route'):
-        route_id = str(route.attrib.get('id') or '').strip()
-        if not route_id:
-            continue
-        section_refs = [
-            str(section_ref.text or '').strip()
-            for section_ref in iter_by_local_name(route, 'RouteSectionRef')
-            if str(section_ref.text or '').strip()
-        ]
-        routes[route_id] = section_refs
-
-    route_lines: dict[str, set[str]] = {}
-    for service in iter_by_local_name(root, 'Service'):
-        line_names = [
-            str(line_name.text or '').strip()
-            for line_name in iter_by_local_name(service, 'LineName')
-            if str(line_name.text or '').strip()
-        ]
-        if not line_names:
-            service_code = str(next((item.text for item in iter_by_local_name(service, 'ServiceCode') if item.text), '') or '').strip()
-            if service_code:
-                line_names = [service_code]
-
-        route_refs = [
-            str(route_ref.text or '').strip()
-            for route_ref in iter_by_local_name(service, 'RouteRef')
-            if str(route_ref.text or '').strip()
-        ]
-        for route_ref in route_refs:
-            route_lines.setdefault(route_ref, set()).update(line_names or [route_ref])
+        shapes.setdefault(shape_id, []).append((longitude, latitude, sequence))
 
     route_items: list[dict[str, object]] = []
     features: list[dict[str, object]] = []
 
-    for route_id, section_refs in routes.items():
-        coordinates: list[list[float]] = []
-        for section_ref in section_refs:
-            for route_link_ref in route_sections.get(section_ref, []):
-                for point in route_links.get(route_link_ref, []):
-                    if not coordinates or coordinates[-1] != point:
-                        coordinates.append(point)
+    for route_id, shape_ids in route_shapes.items():
+        meta = route_meta.get(route_id, {})
+        short_name = str(meta.get('shortName') or '').strip() or route_id
+        long_name = str(meta.get('longName') or '').strip()
+        label = short_name if not long_name or long_name.lower() == short_name.lower() else f'{short_name} - {long_name}'
 
-        if len(coordinates) < 2:
-            continue
+        route_feature_count = 0
+        for shape_id in sorted(shape_ids):
+            points = sorted(shapes.get(shape_id, []), key=lambda entry: entry[2])
+            coordinates: list[list[float]] = []
+            for longitude, latitude, _ in points:
+                point = [longitude, latitude]
+                if not coordinates or coordinates[-1] != point:
+                    coordinates.append(point)
 
-        line_name = sorted(route_lines.get(route_id, {route_id}))[0]
-        label = line_name if line_name.lower() == route_id.lower() else f'{line_name} ({route_id})'
+            if len(coordinates) < 2:
+                continue
 
-        route_items.append(
-            {
-                'id': route_id,
-                'lineName': line_name,
-                'label': label,
-                'pointCount': len(coordinates),
-            }
-        )
+            features.append(
+                {
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'LineString',
+                        'coordinates': coordinates,
+                    },
+                    'properties': {
+                        'routeId': route_id,
+                        'shapeId': shape_id,
+                        'lineName': short_name,
+                        'label': label,
+                    },
+                }
+            )
+            route_feature_count += 1
 
-        features.append(
-            {
-                'type': 'Feature',
-                'geometry': {
-                    'type': 'LineString',
-                    'coordinates': coordinates,
-                },
-                'properties': {
-                    'routeId': route_id,
-                    'lineName': line_name,
+        if route_feature_count:
+            route_items.append(
+                {
+                    'id': route_id,
+                    'lineName': short_name,
                     'label': label,
-                },
-            }
-        )
+                    'shapeCount': route_feature_count,
+                }
+            )
 
     route_items.sort(key=lambda item: route_sort_key(str(item['lineName'])))
     if not route_items:
-        raise ValueError('No route polylines with geo points were found in this TransXChange file.')
+        raise ValueError('No plottable route shapes were found in this GTFS ZIP.')
 
     return {
         'routeCount': len(route_items),
@@ -1098,11 +1117,11 @@ def parse_transxchange_routes(xml_bytes: bytes) -> dict[str, object]:
     }
 
 
-def load_transxchange_cache() -> dict[str, object] | None:
-    if not TRANSXCHANGE_CACHE_PATH.exists():
+def load_gtfs_cache() -> dict[str, object] | None:
+    if not GTFS_CACHE_PATH.exists():
         return None
     try:
-        data = json.loads(TRANSXCHANGE_CACHE_PATH.read_text(encoding='utf-8'))
+        data = json.loads(GTFS_CACHE_PATH.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
@@ -1110,9 +1129,9 @@ def load_transxchange_cache() -> dict[str, object] | None:
     return data
 
 
-def save_transxchange_data(xml_bytes: bytes, parsed: dict[str, object], original_filename: str) -> dict[str, object]:
-    TRANSXCHANGE_DIR.mkdir(parents=True, exist_ok=True)
-    TRANSXCHANGE_UPLOAD_PATH.write_bytes(xml_bytes)
+def save_gtfs_data(zip_bytes: bytes, parsed: dict[str, object], original_filename: str) -> dict[str, object]:
+    GTFS_DIR.mkdir(parents=True, exist_ok=True)
+    GTFS_UPLOAD_PATH.write_bytes(zip_bytes)
 
     payload = {
         'uploadedAt': datetime.now(timezone.utc).isoformat(),
@@ -1121,7 +1140,7 @@ def save_transxchange_data(xml_bytes: bytes, parsed: dict[str, object], original
         'routes': parsed['routes'],
         'featureCollection': parsed['featureCollection'],
     }
-    TRANSXCHANGE_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
+    GTFS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
     return payload
 
 
@@ -1141,16 +1160,16 @@ def filter_route_features(cache: dict[str, object], selected_route: str) -> dict
     }
 
 
-@app.get('/api/transxchange/status')
+@app.get('/api/gtfs/status')
 @login_required('user_management')
-def transxchange_status():
-    cache = load_transxchange_cache()
+def gtfs_status():
+    cache = load_gtfs_cache()
     if cache is None:
         return jsonify(
             {
                 'ok': True,
                 'configured': False,
-                'message': 'No TransXChange file uploaded yet.',
+                'message': 'No GTFS ZIP uploaded yet.',
                 'routeCount': 0,
             }
         )
@@ -1166,23 +1185,24 @@ def transxchange_status():
     )
 
 
-@app.post('/api/transxchange/upload')
+@app.post('/api/gtfs/upload')
 @login_required('user_management')
-def upload_transxchange():
-    file = request.files.get('transxchangeFile')
+def upload_gtfs():
+    file = request.files.get('gtfsZipFile')
     if file is None or not file.filename:
-        return jsonify({'ok': False, 'message': 'Select a TransXChange XML file to upload.'}), 400
+        return jsonify({'ok': False, 'message': 'Select a GTFS ZIP file to upload.'}), 400
 
-    raw = file.stream.read(TRANSXCHANGE_MAX_UPLOAD_BYTES + 1)
-    if len(raw) > TRANSXCHANGE_MAX_UPLOAD_BYTES:
+    raw = file.stream.read(GTFS_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > GTFS_MAX_UPLOAD_BYTES:
         return jsonify({'ok': False, 'message': 'The file is too large.'}), 413
 
     try:
-        parsed = parse_transxchange_routes(raw)
+        extracted_dir = unzip_gtfs_archive(raw)
+        parsed = parse_gtfs_routes_from_directory(extracted_dir)
     except ValueError as error:
         return jsonify({'ok': False, 'message': str(error)}), 400
 
-    cache_payload = save_transxchange_data(raw, parsed, file.filename)
+    cache_payload = save_gtfs_data(raw, parsed, file.filename)
     return jsonify(
         {
             'ok': True,
@@ -1196,7 +1216,7 @@ def upload_transxchange():
 @app.get('/api/tracking/static-routes')
 @login_required('tracking')
 def tracking_static_routes():
-    cache = load_transxchange_cache()
+    cache = load_gtfs_cache()
     selected_route = str(request.args.get('route', 'all') or 'all').strip()
 
     if cache is None:
@@ -1204,7 +1224,7 @@ def tracking_static_routes():
             {
                 'ok': True,
                 'configured': False,
-                'message': 'No TransXChange file has been uploaded yet.',
+                'message': 'No GTFS ZIP has been uploaded yet.',
                 'selectedRoute': 'all',
                 'routes': [],
                 'featureCollection': {'type': 'FeatureCollection', 'features': []},

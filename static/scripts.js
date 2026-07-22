@@ -357,7 +357,7 @@ function initializeMap() {
         setRouteControlsEnabled(Boolean(routeToggle?.checked) && payload.configured);
 
         if (!payload.configured) {
-          setRouteStatus(payload.message || 'No TransXChange file has been uploaded yet.');
+          setRouteStatus(payload.message || 'No GTFS ZIP has been uploaded yet.');
           return;
         }
 
@@ -401,7 +401,7 @@ function initializeMap() {
     map.on('zoom', applyZoomStyling);
 
     setRouteControlsEnabled(false);
-    setRouteStatus('Load a TransXChange file from Users to display static route paths.');
+    setRouteStatus('Load a GTFS ZIP from Users to display static route paths.');
 
     if (routeToggle) {
       routeToggle.addEventListener('change', () => {
@@ -1223,11 +1223,11 @@ function initializeUsersPage() {
   const refreshButton = document.querySelector('#refresh-users');
   const usersMessage = document.querySelector('#users-message');
   const formMessage = document.querySelector('#user-form-message');
-  const txcUploadForm = document.querySelector('#txc-upload-form');
-  const txcFileInput = document.querySelector('#txc-file');
-  const txcUploadMessage = document.querySelector('#txc-upload-message');
-  const txcUploadSummary = document.querySelector('#txc-upload-summary');
-  const refreshTxcStatusButton = document.querySelector('#refresh-txc-status');
+  const gtfsUploadForm = document.querySelector('#gtfs-upload-form');
+  const gtfsFileInput = document.querySelector('#gtfs-file');
+  const gtfsUploadMessage = document.querySelector('#gtfs-upload-message');
+  const gtfsUploadSummary = document.querySelector('#gtfs-upload-summary');
+  const refreshGtfsStatusButton = document.querySelector('#refresh-gtfs-status');
 
   if (!userForm || !usersList) {
     return;
@@ -1247,25 +1247,25 @@ function initializeUsersPage() {
     setMessage(usersMessage, `${payload.users.length} user${payload.users.length === 1 ? '' : 's'} loaded.`, 'success');
   };
 
-  const loadTransxchangeStatus = async () => {
-    if (!window.OCC_ASSIST.transxchangeStatusUrl || !txcUploadSummary) {
+  const loadGtfsStatus = async () => {
+    if (!window.OCC_ASSIST.gtfsStatusUrl || !gtfsUploadSummary) {
       return;
     }
 
-    const response = await fetch(window.OCC_ASSIST.transxchangeStatusUrl, { cache: 'no-store' });
+    const response = await fetch(window.OCC_ASSIST.gtfsStatusUrl, { cache: 'no-store' });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.message || 'Unable to load TransXChange status.');
+      throw new Error(payload.message || 'Unable to load GTFS status.');
     }
 
     if (!payload.configured) {
-      txcUploadSummary.textContent = payload.message || 'No TransXChange file uploaded yet.';
+      gtfsUploadSummary.textContent = payload.message || 'No GTFS ZIP uploaded yet.';
       return;
     }
 
     const uploadedAt = payload.uploadedAt ? new Date(payload.uploadedAt).toLocaleString() : 'Unknown';
     const filename = payload.originalFilename || 'Uploaded file';
-    txcUploadSummary.textContent = `${payload.routeCount} routes available from ${filename} (uploaded ${uploadedAt}).`;
+    gtfsUploadSummary.textContent = `${payload.routeCount} routes available from ${filename} (uploaded ${uploadedAt}).`;
   };
 
   userForm.addEventListener('submit', async (event) => {
@@ -1328,50 +1328,50 @@ function initializeUsersPage() {
     loadUsers();
   });
 
-  if (txcUploadForm && txcFileInput && txcUploadMessage && txcUploadSummary) {
-    txcUploadForm.addEventListener('submit', async (event) => {
+  if (gtfsUploadForm && gtfsFileInput && gtfsUploadMessage && gtfsUploadSummary) {
+    gtfsUploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
 
-      const file = txcFileInput.files && txcFileInput.files[0] ? txcFileInput.files[0] : null;
+      const file = gtfsFileInput.files && gtfsFileInput.files[0] ? gtfsFileInput.files[0] : null;
       if (!file) {
-        setMessage(txcUploadMessage, 'Choose a TransXChange XML file before uploading.', 'error');
+        setMessage(gtfsUploadMessage, 'Choose a GTFS ZIP file before uploading.', 'error');
         return;
       }
 
       const formData = new FormData();
-      formData.append('transxchangeFile', file);
-      setMessage(txcUploadMessage, 'Uploading and extracting route paths...');
+      formData.append('gtfsZipFile', file);
+      setMessage(gtfsUploadMessage, 'Uploading GTFS ZIP and extracting route paths...');
 
-      const response = await fetch(window.OCC_ASSIST.transxchangeUploadUrl, {
+      const response = await fetch(window.OCC_ASSIST.gtfsUploadUrl, {
         method: 'POST',
         body: formData,
       });
       const payload = await response.json();
 
       if (!response.ok || !payload.ok) {
-        setMessage(txcUploadMessage, payload.message || 'Unable to upload TransXChange file.', 'error');
+        setMessage(gtfsUploadMessage, payload.message || 'Unable to upload GTFS ZIP file.', 'error');
         return;
       }
 
-      setMessage(txcUploadMessage, `Upload complete. ${payload.routeCount} routes extracted.`, 'success');
-      txcUploadForm.reset();
-      await loadTransxchangeStatus();
+      setMessage(gtfsUploadMessage, `Upload complete. ${payload.routeCount} routes extracted.`, 'success');
+      gtfsUploadForm.reset();
+      await loadGtfsStatus();
     });
 
-    if (refreshTxcStatusButton) {
-      refreshTxcStatusButton.addEventListener('click', () => {
-        loadTransxchangeStatus().catch((error) => {
-          setMessage(txcUploadMessage, error.message || 'Unable to refresh TransXChange status.', 'error');
+    if (refreshGtfsStatusButton) {
+      refreshGtfsStatusButton.addEventListener('click', () => {
+        loadGtfsStatus().catch((error) => {
+          setMessage(gtfsUploadMessage, error.message || 'Unable to refresh GTFS status.', 'error');
         });
       });
     }
   }
 
   loadUsers();
-  if (txcUploadSummary) {
-    loadTransxchangeStatus().catch((error) => {
-      if (txcUploadMessage) {
-        setMessage(txcUploadMessage, error.message || 'Unable to load TransXChange status.', 'error');
+  if (gtfsUploadSummary) {
+    loadGtfsStatus().catch((error) => {
+      if (gtfsUploadMessage) {
+        setMessage(gtfsUploadMessage, error.message || 'Unable to load GTFS status.', 'error');
       }
     });
   }
