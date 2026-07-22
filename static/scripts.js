@@ -72,6 +72,8 @@ function setMessage(element, message, variant = '') {
 function initializeMap() {
   const mapContainer = document.querySelector('#map');
   const mapStatus = document.querySelector('#map-status');
+  const boltonCenter = [-2.428219, 53.576864];
+  const staleAfterMs = 30_000;
   if (!mapContainer || typeof mapboxgl === 'undefined') {
     return;
   }
@@ -81,22 +83,28 @@ function initializeMap() {
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/mapbox/dark-v11',
-      center: [-0.1276, 51.5074],
-      zoom: 10,
+      center: boltonCenter,
+      zoom: 12,
     });
 
     const markers = new Map();
-    let hasFittedVehicles = false;
     let refreshIntervalId = null;
 
-    const renderVehicles = (vehicles) => {
+    const applyZoomStyling = () => {
+      const zoom = map.getZoom();
+      const normalized = Math.max(0, Math.min(1, (zoom - 12) / 4));
+      const flagScale = 0.3 + normalized * 0.7;
+      const flagOpacity = 0.18 + normalized * 0.82;
+      mapContainer.style.setProperty('--vehicle-flag-scale', flagScale.toFixed(2));
+      mapContainer.style.setProperty('--vehicle-flag-opacity', flagOpacity.toFixed(2));
+    };
+
+    const renderVehicles = (vehicles, observedAtMs) => {
       const activeIds = new Set();
-      const bounds = new mapboxgl.LngLatBounds();
 
       vehicles.forEach((vehicle) => {
         activeIds.add(vehicle.id);
         const lngLat = [vehicle.longitude, vehicle.latitude];
-        bounds.extend(lngLat);
 
         const labelText = [
           `Service ${vehicle.service}`,
@@ -110,6 +118,7 @@ function initializeMap() {
           markerState.marker.setLngLat(lngLat);
           markerState.flag.textContent = labelText;
           markerState.flag.dataset.direction = vehicle.direction;
+          markerState.lastSeenAtMs = observedAtMs;
           return;
         }
 
@@ -131,20 +140,15 @@ function initializeMap() {
           .setLngLat(lngLat)
           .addTo(map);
 
-        markers.set(vehicle.id, { marker, flag });
+        markers.set(vehicle.id, { marker, flag, lastSeenAtMs: observedAtMs });
       });
 
       markers.forEach((markerState, markerId) => {
-        if (!activeIds.has(markerId)) {
+        if (!activeIds.has(markerId) && observedAtMs - markerState.lastSeenAtMs > staleAfterMs) {
           markerState.marker.remove();
           markers.delete(markerId);
         }
       });
-
-      if (!hasFittedVehicles && vehicles.length > 0) {
-        map.fitBounds(bounds, { padding: 72, maxZoom: 12, duration: 0 });
-        hasFittedVehicles = true;
-      }
     };
 
     const refreshVehicles = async () => {
@@ -159,9 +163,18 @@ function initializeMap() {
           throw new Error(payload.message || 'Unable to load vehicle positions.');
         }
 
-        renderVehicles(payload.vehicles || []);
+        const observedAtMs = Date.parse(payload.sourceTimestamp || payload.refreshedAt) || Date.now();
+        const activeVehicles = (payload.vehicles || []).filter((vehicle) => {
+          const recordedAtMs = Date.parse(vehicle.recordedAt || '');
+          if (Number.isNaN(recordedAtMs)) {
+            return true;
+          }
+          return observedAtMs - recordedAtMs <= staleAfterMs;
+        });
+
+        renderVehicles(activeVehicles, observedAtMs);
         const updated = formatFeedTime(payload.sourceTimestamp || payload.refreshedAt);
-        setMessage(mapStatus, `${payload.vehicles.length} vehicle${payload.vehicles.length === 1 ? '' : 's'} updated ${updated}.`, 'success');
+        setMessage(mapStatus, `${activeVehicles.length} active vehicle${activeVehicles.length === 1 ? '' : 's'} updated ${updated}.`, 'success');
       } catch (error) {
         setMessage(mapStatus, error.message || 'Unable to load vehicle positions.', 'error');
       }
@@ -183,6 +196,9 @@ function initializeMap() {
       map.once('load', startVehicleRefresh);
       window.setTimeout(startVehicleRefresh, 1500);
     }
+
+    applyZoomStyling();
+    map.on('zoom', applyZoomStyling);
 
     return;
   }

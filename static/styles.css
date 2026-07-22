@@ -264,6 +264,8 @@ body::before {
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: linear-gradient(180deg, rgba(12, 25, 45, 0.95), rgba(7, 15, 28, 0.98));
   margin-top: 22px;
+  --vehicle-flag-scale: 0.3;
+  --vehicle-flag-opacity: 0.18;
 }
 
 .map-meta {
@@ -299,6 +301,11 @@ body::before {
   line-height: 1.4;
   text-align: center;
   white-space: nowrap;
+  transform: scale(var(--vehicle-flag-scale));
+  transform-origin: bottom center;
+  opacity: var(--vehicle-flag-opacity);
+  transition: transform 0.18s ease, opacity 0.18s ease;
+  pointer-events: none;
 }
 
 .vehicle-flag[data-direction='inbound'] {
