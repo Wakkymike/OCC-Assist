@@ -539,10 +539,14 @@ body.driving-hours-active {
   margin-top: 10px;
   display: grid;
   gap: 8px;
+  position: relative;
+  z-index: 3;
 }
 
 .saved-snapshots-card {
   min-height: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .saved-snapshots-list {
