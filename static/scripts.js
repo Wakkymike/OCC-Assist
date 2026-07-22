@@ -87,6 +87,7 @@ function initializeMap() {
 
     const markers = new Map();
     let hasFittedVehicles = false;
+    let refreshIntervalId = null;
 
     const renderVehicles = (vehicles) => {
       const activeIds = new Set();
@@ -166,10 +167,23 @@ function initializeMap() {
       }
     };
 
-    map.on('load', () => {
+    const startVehicleRefresh = () => {
+      if (refreshIntervalId !== null) {
+        return;
+      }
+
+      setMessage(mapStatus, 'Loading vehicle positions...', 'success');
       refreshVehicles();
-      window.setInterval(refreshVehicles, 7000);
-    });
+      refreshIntervalId = window.setInterval(refreshVehicles, 7000);
+    };
+
+    if (map.loaded()) {
+      startVehicleRefresh();
+    } else {
+      map.once('load', startVehicleRefresh);
+      window.setTimeout(startVehicleRefresh, 1500);
+    }
+
     return;
   }
 
