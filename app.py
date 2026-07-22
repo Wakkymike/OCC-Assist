@@ -40,7 +40,7 @@ SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
 ROUTE_TRAIL_RETENTION_SECONDS = int(os.environ.get('OCC_ASSIST_ROUTE_TRAIL_RETENTION_SECONDS', '2700'))
 ROUTE_TRAIL_MAX_POINTS = int(os.environ.get('OCC_ASSIST_ROUTE_TRAIL_MAX_POINTS', '120'))
-GO_NORTH_WEST_OPERATOR_MARKERS = ('go north west', 'go-north-west', 'go_north_west', 'gonorthwest', 'gnw')
+GO_NORTH_WEST_OPERATOR_MARKERS = ('go north west', 'go-north-west', 'go_north_west', 'gonorthwest', 'gnw', 'bngn')
 
 
 VEHICLE_ROUTE_TRAILS: dict[str, list[dict[str, object]]] = {}
@@ -965,7 +965,7 @@ def is_go_north_west_bee_vehicle(vehicle: dict[str, object]) -> bool:
 
     operator = str(vehicle.get('operator') or '').strip().lower()
     normalized = operator.replace(' ', '').replace('-', '').replace('_', '')
-    if normalized == 'gnw':
+    if normalized in {'gnw', 'bngn'}:
         return True
     return any(marker in operator for marker in GO_NORTH_WEST_OPERATOR_MARKERS)
 
