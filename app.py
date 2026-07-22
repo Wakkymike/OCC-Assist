@@ -47,6 +47,7 @@ GTFS_EXTRACT_DIR = GTFS_DIR / 'extracted'
 GTFS_CACHE_PATH = GTFS_DIR / 'routes-cache.json'
 GTFS_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_GTFS_MAX_UPLOAD_BYTES', '60000000'))
 GTFS_ALLOWED_AGENCY_ID = str(os.environ.get('OCC_ASSIST_GTFS_ALLOWED_AGENCY_ID', 'OP11122')).strip()
+GTFS_MAX_FALLBACK_PATTERNS_PER_ROUTE = int(os.environ.get('OCC_ASSIST_GTFS_MAX_FALLBACK_PATTERNS_PER_ROUTE', '4'))
 
 
 app = Flask(__name__)
@@ -1010,6 +1011,8 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     routes_path = find_gtfs_file(extracted_dir, 'routes.txt')
     trips_path = find_gtfs_file(extracted_dir, 'trips.txt')
     shapes_path = find_gtfs_file(extracted_dir, 'shapes.txt')
+    stops_path = find_gtfs_file(extracted_dir, 'stops.txt')
+    stop_times_path = find_gtfs_file(extracted_dir, 'stop_times.txt')
 
     if routes_path is None or trips_path is None or shapes_path is None:
         raise ValueError('GTFS ZIP must include routes.txt, trips.txt, and shapes.txt.')
@@ -1037,14 +1040,19 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     allowed_route_ids = set(route_meta.keys())
 
     route_shapes: dict[str, set[str]] = {}
+    route_trips: dict[str, set[str]] = {}
     for row in trip_rows:
         route_id = str(row.get('route_id') or '').strip()
+        trip_id = str(row.get('trip_id') or '').strip()
         shape_id = str(row.get('shape_id') or '').strip()
-        if not route_id or not shape_id:
+        if not route_id:
             continue
         if allowed_route_ids and route_id not in allowed_route_ids:
             continue
-        route_shapes.setdefault(route_id, set()).add(shape_id)
+        if trip_id:
+            route_trips.setdefault(route_id, set()).add(trip_id)
+        if shape_id:
+            route_shapes.setdefault(route_id, set()).add(shape_id)
 
     shapes: dict[str, list[tuple[float, float, int]]] = {}
     for row in shape_rows:
@@ -1065,6 +1073,52 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             continue
 
         shapes.setdefault(shape_id, []).append((longitude, latitude, sequence))
+
+    trip_points: dict[str, list[list[float]]] = {}
+    if stops_path is not None and stop_times_path is not None:
+        relevant_trip_ids = set().union(*route_trips.values()) if route_trips else set()
+        if relevant_trip_ids:
+            stop_rows = read_gtfs_rows(stops_path)
+            stops_lookup: dict[str, tuple[float, float]] = {}
+            for row in stop_rows:
+                stop_id = str(row.get('stop_id') or '').strip()
+                lon_text = str(row.get('stop_lon') or '').strip()
+                lat_text = str(row.get('stop_lat') or '').strip()
+                if not stop_id or not lon_text or not lat_text:
+                    continue
+                try:
+                    longitude = float(lon_text)
+                    latitude = float(lat_text)
+                except ValueError:
+                    continue
+                stops_lookup[stop_id] = (longitude, latitude)
+
+            raw_trip_points: dict[str, list[tuple[int, str]]] = {}
+            with stop_times_path.open('r', encoding='utf-8-sig', newline='') as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    trip_id = str(row.get('trip_id') or '').strip()
+                    if trip_id not in relevant_trip_ids:
+                        continue
+                    stop_id = str(row.get('stop_id') or '').strip()
+                    if stop_id not in stops_lookup:
+                        continue
+                    sequence_text = str(row.get('stop_sequence') or '').strip()
+                    try:
+                        sequence = int(float(sequence_text or '0'))
+                    except ValueError:
+                        sequence = 0
+                    raw_trip_points.setdefault(trip_id, []).append((sequence, stop_id))
+
+            for trip_id, entries in raw_trip_points.items():
+                coordinates: list[list[float]] = []
+                for _, stop_id in sorted(entries, key=lambda entry: entry[0]):
+                    longitude, latitude = stops_lookup[stop_id]
+                    point = [longitude, latitude]
+                    if not coordinates or coordinates[-1] != point:
+                        coordinates.append(point)
+                if len(coordinates) >= 2:
+                    trip_points[trip_id] = coordinates
 
     route_items: list[dict[str, object]] = []
     features: list[dict[str, object]] = []
@@ -1114,9 +1168,58 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                 }
             )
 
+    for route_id, trip_ids in route_trips.items():
+        if any(item.get('id') == route_id for item in route_items):
+            continue
+
+        meta = route_meta.get(route_id, {})
+        short_name = str(meta.get('shortName') or '').strip() or route_id
+        long_name = str(meta.get('longName') or '').strip()
+        label = short_name if not long_name or long_name.lower() == short_name.lower() else f'{short_name} - {long_name}'
+
+        route_feature_count = 0
+        signature_set: set[tuple[tuple[float, float], ...]] = set()
+        for trip_id in sorted(trip_ids):
+            coordinates = trip_points.get(trip_id, [])
+            if len(coordinates) < 2:
+                continue
+            signature = tuple((point[0], point[1]) for point in coordinates)
+            if signature in signature_set:
+                continue
+            signature_set.add(signature)
+
+            features.append(
+                {
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'LineString',
+                        'coordinates': coordinates,
+                    },
+                    'properties': {
+                        'routeId': route_id,
+                        'shapeId': f'stops:{trip_id}',
+                        'lineName': short_name,
+                        'label': label,
+                    },
+                }
+            )
+            route_feature_count += 1
+            if route_feature_count >= GTFS_MAX_FALLBACK_PATTERNS_PER_ROUTE:
+                break
+
+        if route_feature_count:
+            route_items.append(
+                {
+                    'id': route_id,
+                    'lineName': short_name,
+                    'label': label,
+                    'shapeCount': route_feature_count,
+                }
+            )
+
     route_items.sort(key=lambda item: route_sort_key(str(item['lineName'])))
     if not route_items:
-        raise ValueError('No plottable route shapes were found in this GTFS ZIP.')
+        raise ValueError('No plottable route paths were found in this GTFS ZIP for the selected agency.')
 
     return {
         'routeCount': len(route_items),
