@@ -152,6 +152,20 @@ function initializeMap() {
 
   if (window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE') {
     mapboxgl.accessToken = window.MAPBOX_TOKEN;
+    const mapContainer = document.getElementById('map');
+    const mapShell = document.querySelector('.map-shell-tracking');
+    const syncMapContainerSize = () => {
+      if (!mapContainer || !mapShell) {
+        return;
+      }
+      const shellHeight = Math.max(mapShell.clientHeight, 480);
+      mapContainer.style.position = 'relative';
+      mapContainer.style.width = '100%';
+      mapContainer.style.height = `${shellHeight}px`;
+      mapContainer.style.minHeight = `${shellHeight}px`;
+    };
+    syncMapContainerSize();
+
     const map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/mapbox/streets-v12',
@@ -162,6 +176,10 @@ function initializeMap() {
     const vehicleStates = new Map();
     const vehicleDataById = new Map();
     let selectedVehicleId = null;
+    const resizeMap = () => {
+      syncMapContainerSize();
+      map.resize();
+    };
     let refreshIntervalId = null;
     let stopFeatureCollection = { type: 'FeatureCollection', features: [] };
     let stopFeaturesLoaded = false;
@@ -280,8 +298,12 @@ function initializeMap() {
       const normalized = Math.max(0, Math.min(1, (zoom - 9.5) / 4.5));
       const flagScale = 0.3 + normalized * 0.7;
       const flagOpacity = 0.18 + normalized * 0.82;
-      mapContainer.style.setProperty('--vehicle-flag-scale', flagScale.toFixed(2));
-      mapContainer.style.setProperty('--vehicle-flag-opacity', flagOpacity.toFixed(2));
+      vehicleStates.forEach((state) => {
+        if (state.element) {
+          state.element.style.setProperty('--vehicle-flag-scale', flagScale.toFixed(2));
+          state.element.style.setProperty('--vehicle-flag-opacity', flagOpacity.toFixed(2));
+        }
+      });
     };
 
     const setRouteControlsEnabled = (enabled) => {
@@ -449,6 +471,11 @@ function initializeMap() {
       loadTrackingStops();
       startVehicleRefresh();
       loadStaticRoutes();
+      window.requestAnimationFrame(() => {
+        resizeMap();
+        window.requestAnimationFrame(resizeMap);
+      });
+      window.setTimeout(resizeMap, 250);
     };
 
     if (map.loaded()) {
@@ -457,6 +484,13 @@ function initializeMap() {
       map.once('load', initializeOverlays);
       window.setTimeout(startVehicleRefresh, 1500);
     }
+
+    window.requestAnimationFrame(() => {
+      resizeMap();
+      window.requestAnimationFrame(resizeMap);
+    });
+    window.setTimeout(resizeMap, 250);
+    window.addEventListener('resize', resizeMap);
 
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
