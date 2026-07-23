@@ -1278,7 +1278,7 @@ def calculate_vehicle_punctuality(
         if isinstance(payload.get('stops'), list) and payload['stops']:
             first_stop = next((entry for entry in payload['stops'] if isinstance(entry, dict)), None)
         first_stop_time = first_stop.get('departureTime') or first_stop.get('arrivalTime') if first_stop else None
-        scheduled_at = build_scheduled_stop_datetime(base_time, schedule_entry.get('departureTime') or schedule_entry.get('arrivalTime'), first_stop_time)
+        scheduled_at = build_scheduled_stop_datetime(observed_time, schedule_entry.get('departureTime') or schedule_entry.get('arrivalTime'), first_stop_time)
         if scheduled_at is None:
             continue
 
@@ -1287,7 +1287,7 @@ def calculate_vehicle_punctuality(
         if route_stop_index is not None:
             stop_index = find_stop_index(schedule_entry, payload.get('stops', []) if isinstance(payload.get('stops'), list) else None)
             if stop_index is not None:
-                candidate_key += abs(route_stop_index - stop_index) * 60
+                candidate_key += abs(route_stop_index - stop_index) * 15
         if best_choice is None or candidate_key < best_choice[3]:
             best_choice = (payload, schedule_entry, scheduled_at, candidate_key)
 
