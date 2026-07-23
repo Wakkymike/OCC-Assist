@@ -1070,11 +1070,21 @@ def service_is_active(service_id: str, service_calendar: dict[str, list[str]] | 
     return target_date.strftime('%Y%m%d') in {str(value) for value in active_dates}
 
 
+def format_punctuality_delta(delta_seconds: int) -> str:
+    if delta_seconds == 0:
+        return '0m'
+
+    minutes = int(round(abs(delta_seconds) / 60))
+    if minutes <= 0:
+        minutes = 1
+    return f'{minutes}m'
+
+
 def format_punctuality_label(delta_seconds: int, scheduled_at: datetime | None) -> str:
     if delta_seconds < 0:
-        return 'Early'
+        return f'Early -{format_punctuality_delta(delta_seconds)}'
     if delta_seconds > 0:
-        return 'Late'
+        return f'Late +{format_punctuality_delta(delta_seconds)}'
     return 'On time'
 
 
