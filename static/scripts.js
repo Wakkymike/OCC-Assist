@@ -1680,31 +1680,58 @@ function initializeUsersPage() {
     }
 
     const forceLogoutButton = event.target.closest('[data-action="force-logout"]');
-    if (!forceLogoutButton) {
+    if (forceLogoutButton) {
+      event.preventDefault();
+      const userId = forceLogoutButton.dataset.userId;
+      const userEmail = forceLogoutButton.dataset.userEmail || 'this user';
+      const isConfirmed = window.confirm(`End the current active session for ${userEmail}?`);
+
+      if (!isConfirmed) {
+        return;
+      }
+
+      setMessage(usersMessage, 'Ending active session...');
+      const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}/sessions/force-logout`, {
+        method: 'POST',
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        setMessage(usersMessage, payload.message || 'Unable to end the active session.', 'error');
+        return;
+      }
+
+      setMessage(usersMessage, 'Active session ended.', 'success');
+      await loadUsers();
+      return;
+    }
+
+    const forcePasswordResetButton = event.target.closest('[data-action="force-password-reset"]');
+    if (!forcePasswordResetButton) {
       return;
     }
 
     event.preventDefault();
-    const userId = forceLogoutButton.dataset.userId;
-    const userEmail = forceLogoutButton.dataset.userEmail || 'this user';
-    const isConfirmed = window.confirm(`End the current active session for ${userEmail}?`);
+    const userId = forcePasswordResetButton.dataset.userId;
+    const userEmail = forcePasswordResetButton.dataset.userEmail || 'this user';
+    const isConfirmed = window.confirm(`Require ${userEmail} to reset their password at next sign-in?`);
 
     if (!isConfirmed) {
       return;
     }
 
-    setMessage(usersMessage, 'Ending active session...');
-    const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}/sessions/force-logout`, {
+    setMessage(usersMessage, 'Requesting password reset...');
+    const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}/password-reset`, {
       method: 'POST',
     });
     const payload = await response.json();
 
     if (!response.ok) {
-      setMessage(usersMessage, payload.message || 'Unable to end the active session.', 'error');
+      setMessage(usersMessage, payload.message || 'Unable to request password reset.', 'error');
       return;
     }
 
-    setMessage(usersMessage, 'Active session ended.', 'success');
+    setMessage(usersMessage, 'Password reset requested.', 'success');
     await loadUsers();
   });
 
@@ -1802,8 +1829,11 @@ function renderUsers(container, users, permissionLabels) {
       const deleteButtonMarkup = canDeleteUsers && !isSelf
         ? `<button class="btn danger compact" type="button" data-action="delete-user" data-user-id="${user.id}" data-user-email="${user.email}">Delete</button>`
         : '';
-      const forceLogoutButtonMarkup = canDeleteUsers && !isSelf && session.isActive
+      const forceLogoutButtonMarkup = canDeleteUsers && !isSelf
         ? `<button class="btn secondary compact" type="button" data-action="force-logout" data-user-id="${user.id}" data-user-email="${user.email}">Force logout</button>`
+        : '';
+      const forcePasswordResetButtonMarkup = canDeleteUsers && !isSelf
+        ? `<button class="btn secondary compact" type="button" data-action="force-password-reset" data-user-id="${user.id}" data-user-email="${user.email}">Force password reset</button>`
         : '';
 
       return `
@@ -1818,6 +1848,7 @@ function renderUsers(container, users, permissionLabels) {
               <span class="badge">${user.isSuperadmin ? 'Superadmin' : 'Standard user'}</span>
               ${deleteButtonMarkup}
               ${forceLogoutButtonMarkup}
+              ${forcePasswordResetButtonMarkup}
             </div>
           </div>
           <div class="permission-list">${permissionMarkup}</div>

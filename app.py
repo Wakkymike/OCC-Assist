@@ -99,6 +99,7 @@ def init_db() -> None:
             email TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
             is_superadmin INTEGER NOT NULL DEFAULT 0,
+            must_reset_password INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -212,6 +213,21 @@ def fetch_user_permissions(user_id: int) -> dict[str, bool]:
     return permissions
 
 
+def mark_user_for_password_reset(user_id: int, enabled: bool = True) -> None:
+    database = get_db()
+    database.execute('UPDATE users SET must_reset_password = ? WHERE id = ?', (int(enabled), user_id))
+    database.commit()
+
+
+def update_user_password(user_id: int, password: str) -> None:
+    database = get_db()
+    database.execute(
+        'UPDATE users SET password_hash = ?, must_reset_password = 0 WHERE id = ?',
+        (generate_password_hash(password), user_id),
+    )
+    database.commit()
+
+
 def ensure_user_session(database: sqlite3.Connection, user_id: int, session_token: str, now: datetime | None = None) -> None:
     if not session_token:
         return
@@ -223,7 +239,8 @@ def ensure_user_session(database: sqlite3.Connection, user_id: int, session_toke
         ON CONFLICT(session_token) DO UPDATE SET
             user_id = excluded.user_id,
             last_activity_at = excluded.last_activity_at,
-            active = 1
+            active = 1,
+            created_at = COALESCE(user_sessions.created_at, excluded.created_at)
         ''',
         (user_id, session_token, timestamp, timestamp),
     )
@@ -262,7 +279,7 @@ def fetch_user_session_summary(user_id: int) -> dict[str, object]:
         return {'hasSession': False, 'isActive': False, 'sessionDurationSeconds': 0}
 
     now = datetime.now(timezone.utc)
-    created_at = parse_session_timestamp(row['created_at']) or now
+    created_at = parse_session_timestamp(row['created_at']) or parse_session_timestamp(row['last_activity_at']) or now
     last_activity_at = parse_session_timestamp(row['last_activity_at']) or created_at
     if bool(row['active']):
         duration_seconds = max(0, int((now - created_at).total_seconds()))
@@ -336,12 +353,21 @@ def inject_user_context() -> dict[str, object]:
 
 
 def parse_session_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
+    if isinstance(value, datetime):
+        current = value
+    elif isinstance(value, (int, float)):
+        current = datetime.fromtimestamp(float(value), tz=timezone.utc)
+    elif isinstance(value, str) and value:
+        try:
+            current = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    else:
         return None
-    try:
-        return datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except ValueError:
-        return None
+
+    if current.tzinfo is None:
+        return current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc)
 
 
 @app.before_request
@@ -399,6 +425,10 @@ def login():
     session['last_activity'] = datetime.now(timezone.utc).isoformat()
     session.modified = True
     ensure_user_session(get_db(), int(user['id']), session_token)
+
+    if bool(user['must_reset_password']):
+        return jsonify({'ok': True, 'redirect': url_for('settings_page') + '?must_reset_password=1', 'mustResetPassword': True})
+
     return jsonify({'ok': True, 'redirect': url_for('daily_overview')})
 
 
@@ -444,6 +474,38 @@ def get_rotacloud_setting():
         abort(401)
     url = get_user_rotacloud_ical_url(int(user['id']))
     return jsonify({'ok': True, 'rotacloudIcalUrl': url})
+
+
+@app.post('/api/settings/password')
+@login_required()
+def update_password_setting():
+    user = get_current_user()
+    if user is None:
+        abort(401)
+
+    payload = request.get_json(silent=True) or {}
+    current_password = str(payload.get('currentPassword', '')).strip()
+    new_password = str(payload.get('newPassword', '')).strip()
+    confirm_password = str(payload.get('confirmPassword', '')).strip()
+
+    if len(new_password) < 8:
+        return jsonify({'ok': False, 'message': 'Choose a password with at least 8 characters.'}), 400
+    if new_password != confirm_password:
+        return jsonify({'ok': False, 'message': 'New passwords do not match.'}), 400
+
+    database = get_db()
+    current_user_row = database.execute('SELECT password_hash, must_reset_password FROM users WHERE id = ?', (user['id'],)).fetchone()
+    if current_user_row is None:
+        abort(404)
+
+    if bool(current_user_row['must_reset_password']):
+        if current_password and not check_password_hash(current_user_row['password_hash'], current_password):
+            return jsonify({'ok': False, 'message': 'Current password is incorrect.'}), 401
+    elif not check_password_hash(current_user_row['password_hash'], current_password):
+        return jsonify({'ok': False, 'message': 'Current password is incorrect.'}), 401
+
+    update_user_password(int(user['id']), new_password)
+    return jsonify({'ok': True, 'message': 'Password changed successfully.'})
 
 
 @app.put('/api/settings/rotacloud')
@@ -2662,6 +2724,26 @@ def force_logout_user_sessions(user_id: int):
     if bool(target_user['is_superadmin']) and not bool(actor['is_superadmin']):
         return jsonify({'ok': False, 'message': 'Only superadmins can force logout superadmin accounts.'}), 403
 
+    invalidate_user_sessions(user_id)
+    return jsonify({'ok': True, 'userId': user_id})
+
+
+@app.post('/api/users/<int:user_id>/password-reset')
+@login_required('user_management')
+def force_password_reset(user_id: int):
+    actor = get_current_user()
+    if actor is None:
+        abort(401)
+
+    target_user = get_db().execute('SELECT id, email, is_superadmin FROM users WHERE id = ?', (user_id,)).fetchone()
+    if target_user is None:
+        abort(404)
+    if int(target_user['id']) == int(actor['id']):
+        return jsonify({'ok': False, 'message': 'You cannot reset your own password from this page.'}), 400
+    if bool(target_user['is_superadmin']) and not bool(actor['is_superadmin']):
+        return jsonify({'ok': False, 'message': 'Only superadmins can reset superadmin passwords.'}), 403
+
+    mark_user_for_password_reset(user_id, True)
     invalidate_user_sessions(user_id)
     return jsonify({'ok': True, 'userId': user_id})
 
