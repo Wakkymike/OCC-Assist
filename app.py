@@ -1896,7 +1896,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     }
 
 
-def load_gtfs_cache() -> dict[str, object] | None:
+def load_gtfs_cache(allow_rebuild: bool = False) -> dict[str, object] | None:
     if not GTFS_CACHE_PATH.exists():
         return None
     try:
@@ -1905,7 +1905,7 @@ def load_gtfs_cache() -> dict[str, object] | None:
         return None
     if not isinstance(data, dict):
         return None
-    if not data.get('tripSchedules') and GTFS_UPLOAD_PATH.exists():
+    if allow_rebuild and not data.get('tripSchedules') and GTFS_UPLOAD_PATH.exists():
         try:
             raw = GTFS_UPLOAD_PATH.read_bytes()
             extracted_dir = unzip_gtfs_archive(raw)
@@ -1964,7 +1964,7 @@ def filter_route_features(cache: dict[str, object], selected_route: str, selecte
 @app.get('/api/gtfs/status')
 @login_required('user_management')
 def gtfs_status():
-    cache = load_gtfs_cache()
+    cache = load_gtfs_cache(allow_rebuild=False)
     if cache is None:
         return jsonify(
             {
@@ -2017,7 +2017,7 @@ def upload_gtfs():
 @app.get('/api/tracking/static-routes')
 @login_required('tracking')
 def tracking_static_routes():
-    cache = load_gtfs_cache()
+    cache = load_gtfs_cache(allow_rebuild=False)
     selected_route = str(request.args.get('route', 'all') or 'all').strip()
     selected_direction = str(request.args.get('direction', 'all') or 'all').strip().lower()
     if selected_direction not in {'all', 'inbound', 'outbound'}:
@@ -2064,7 +2064,7 @@ def tracking_vehicles():
     except RuntimeError as error:
         return jsonify({'ok': False, 'message': str(error)}), 503
 
-    cache = ensure_gtfs_cache_stops(load_gtfs_cache())
+    cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
     enriched_vehicles = enrich_tracking_vehicles(vehicles, cache)
 
     return jsonify(
@@ -2080,7 +2080,7 @@ def tracking_vehicles():
 @app.get('/api/tracking/stops')
 @login_required('tracking')
 def tracking_stops():
-    cache = ensure_gtfs_cache_stops(load_gtfs_cache())
+    cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
     if cache is None or not cache.get('stops'):
         return jsonify(
             {
