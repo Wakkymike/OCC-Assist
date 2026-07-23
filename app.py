@@ -1131,15 +1131,18 @@ def calculate_vehicle_punctuality(
             continue
         if normalized_direction and payload_direction and normalized_direction != 'unknown' and payload_direction != 'unknown' and normalized_direction != payload_direction:
             continue
-        schedule_entry = None
+
+        matching_entries: list[dict[str, object]] = []
         for stop_entry in trip_payload:
             if not isinstance(stop_entry, dict):
                 continue
             if stop_matches_schedule_entry(last_stop, stop_entry):
-                schedule_entry = stop_entry
-                break
-        if schedule_entry is None:
+                matching_entries.append(stop_entry)
+
+        if not matching_entries:
             continue
+
+        schedule_entry = matching_entries[0]
         if normalize_tracking_key(str(trip_id)) in vehicle_identifiers:
             schedule_matches.insert(0, (str(trip_id), payload, schedule_entry))
         else:
