@@ -993,8 +993,8 @@ def parse_tracking_datetime(value: object) -> datetime | None:
             return None
 
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=LONDON_TZ).astimezone(timezone.utc)
+    return parsed.astimezone(LONDON_TZ).astimezone(timezone.utc)
 
 
 def parse_gtfs_time(value: object) -> int | None:
@@ -1083,7 +1083,7 @@ def build_scheduled_stop_datetime(base_time: datetime | None, stop_time_value: o
     hours, remainder = divmod(seconds_within_day, 3600)
     minutes, seconds = divmod(remainder, 60)
     scheduled_date = candidate_time.date()
-    return datetime(scheduled_date.year, scheduled_date.month, scheduled_date.day, hours, minutes, seconds, tzinfo=timezone.utc)
+    return datetime(scheduled_date.year, scheduled_date.month, scheduled_date.day, hours, minutes, seconds, tzinfo=LONDON_TZ).astimezone(timezone.utc)
 
 
 def calculate_vehicle_punctuality(
