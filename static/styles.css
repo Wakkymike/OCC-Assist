@@ -439,6 +439,30 @@ body::before {
   text-transform: uppercase;
 }
 
+.punctuality-pill.green {
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(74, 222, 128, 0.35);
+  color: #b7f7c6;
+}
+
+.punctuality-pill.yellow {
+  background: rgba(250, 204, 21, 0.16);
+  border-color: rgba(250, 204, 21, 0.35);
+  color: #fde68a;
+}
+
+.punctuality-pill.red {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #fecaca;
+}
+
+.punctuality-pill.neutral {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #eef3ff;
+}
+
 .tracking-detail-list,
 .service-detail-list {
   margin: 0;

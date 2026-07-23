@@ -976,6 +976,112 @@ def normalize_tracking_key(value: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(value or '').strip().lower())
 
 
+def parse_tracking_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith('Z'):
+            text = text[:-1] + '+00:00'
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def format_punctuality_delta(delta_seconds: int) -> str:
+    if delta_seconds == 0:
+        return 'On time'
+
+    sign = 'Early' if delta_seconds < 0 else 'Late'
+    absolute_seconds = abs(delta_seconds)
+    minutes, seconds = divmod(absolute_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    pieces: list[str] = []
+    if hours:
+        pieces.append(f'{hours}h')
+    if minutes:
+        pieces.append(f'{minutes}m')
+    if seconds or not pieces:
+        pieces.append(f'{seconds}s')
+
+    return f'{sign} {" ".join(pieces)}'
+
+
+def calculate_vehicle_punctuality(
+    vehicle: dict[str, object],
+    route_sequence: dict[str, object] | None,
+    reference_time: object | None = None,
+) -> dict[str, object]:
+    observed_time = parse_tracking_datetime(vehicle.get('recordedAt') or vehicle.get('sourceTimestamp') or vehicle.get('refreshedAt') or reference_time)
+    if observed_time is None:
+        observed_time = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
+
+    origin_time = parse_tracking_datetime(vehicle.get('originAimedDepartureTime'))
+    arrival_time = parse_tracking_datetime(vehicle.get('destinationAimedArrivalTime'))
+
+    if origin_time is None or arrival_time is None or arrival_time <= origin_time:
+        return {
+            'status': 'unknown',
+            'tone': 'neutral',
+            'deltaSeconds': 0,
+            'label': 'Unknown',
+            'detail': 'No schedule window available',
+        }
+
+    duration_seconds = max(1, int((arrival_time - origin_time).total_seconds()))
+    if observed_time < origin_time:
+        expected_ratio = 0.0
+    elif observed_time > arrival_time:
+        expected_ratio = 1.0
+    else:
+        expected_ratio = max(0.0, min(1.0, (observed_time - origin_time).total_seconds() / duration_seconds))
+
+    actual_ratio = expected_ratio
+    path = route_points_from_stop_sequence(route_sequence.get('stops', []) if isinstance(route_sequence, dict) else [])
+    if len(path) >= 2:
+        longitude = float(vehicle.get('longitude') or 0.0)
+        latitude = float(vehicle.get('latitude') or 0.0)
+        projection = project_point_onto_path(longitude, latitude, path)
+        if projection is not None:
+            cumulative = cumulative_path_distances(path)
+            total_distance = cumulative[-1] if cumulative else 0.0
+            if total_distance > 0.0:
+                actual_ratio = max(0.0, min(1.0, projection['along'] / total_distance))
+
+    delta_seconds = int(round((expected_ratio - actual_ratio) * duration_seconds))
+
+    if delta_seconds < 0:
+        status = 'early'
+        tone = 'red'
+        label = format_punctuality_delta(delta_seconds)
+    elif delta_seconds <= 299:
+        status = 'on-time'
+        tone = 'green'
+        label = 'On time'
+    else:
+        status = 'late'
+        tone = 'yellow'
+        label = format_punctuality_delta(delta_seconds)
+
+    return {
+        'status': status,
+        'tone': tone,
+        'deltaSeconds': delta_seconds,
+        'label': label,
+        'detail': label,
+    }
+
+
 def route_points_from_stop_sequence(stops: list[dict[str, object]]) -> list[list[float]]:
     points: list[list[float]] = []
     for stop in stops:
@@ -1173,6 +1279,11 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
             ).strip()
             or None
         )
+        punctuality = calculate_vehicle_punctuality(
+            vehicle,
+            selected_sequence if isinstance(selected_sequence, dict) else None,
+            reference_time=vehicle.get('recordedAt') or vehicle.get('sourceTimestamp') or vehicle.get('refreshedAt'),
+        )
 
         enriched.append(
             {
@@ -1180,6 +1291,7 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
                 'routeId': route_id or None,
                 'routeLabel': route_label,
                 'boardNumber': board_number,
+                'punctuality': punctuality,
                 'lastStopPassed': (
                     {
                         'id': str(last_stop.get('stopId') or last_stop.get('id') or '').strip(),

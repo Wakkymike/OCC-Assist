@@ -169,6 +169,7 @@ function initializeMap() {
   const selectedDestination = document.querySelector('#tracking-selected-destination');
   const selectedBoard = document.querySelector('#tracking-selected-board');
   const selectedJourney = document.querySelector('#tracking-selected-journey');
+  const selectedPunctuality = document.querySelector('#tracking-selected-punctuality');
   const selectedOriginDeparture = document.querySelector('#tracking-selected-origin-departure');
   const selectedLastStop = document.querySelector('#tracking-selected-last-stop');
   const selectedUpdated = document.querySelector('#tracking-selected-updated');
@@ -315,6 +316,12 @@ function initializeMap() {
       if (selectedJourney) {
         selectedJourney.textContent = journeyNumber;
         selectedJourney.classList.toggle('journey-flash', isFlashingJourney(vehicle));
+      }
+      if (selectedPunctuality) {
+        const punctuality = vehicle?.punctuality || {};
+        const punctualityLabel = punctuality.label || 'Unknown';
+        selectedPunctuality.textContent = punctualityLabel;
+        selectedPunctuality.className = `sidebar-pill punctuality-pill ${punctuality.tone || 'neutral'}`;
       }
       if (selectedOriginDeparture) selectedOriginDeparture.textContent = formatJourneyOriginDeparture(vehicle);
       if (selectedLastStop) selectedLastStop.textContent = formatLastStop(vehicle.lastStopPassed);
@@ -677,6 +684,7 @@ function initializeServiceOverview() {
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-journey" aria-hidden="true"><path d="M7 4h10"/><path d="M6 7h12"/><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 11h6"/><path d="M9 14h4"/></svg><span>Journey number</span></span></dt><dd>${escapeHtml(formatJourneyNumber(vehicle))}</dd></div>
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-time" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Departed first stop</span></span></dt><dd>${escapeHtml(formatJourneyOriginDeparture(vehicle))}</dd></div>
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-board" aria-hidden="true"><rect x="6" y="5" width="12" height="16" rx="2"/><path d="M9 5.5h6v3H9z"/><path d="M9 12h6"/><path d="M9 15h4"/></svg><span>Board number</span></span></dt><dd>${escapeHtml(formatBoardNumber(vehicle))}</dd></div>
+            <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-time" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Early / late</span></span></dt><dd><span class="sidebar-pill punctuality-pill ${escapeHtml(vehicle?.punctuality?.tone || 'neutral')}">${escapeHtml(vehicle?.punctuality?.label || 'Unknown')}</span></dd></div>
             <div><dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-stop" aria-hidden="true"><path d="M12 21s6-4.5 6-10a6 6 0 1 0-12 0c0 5.5 6 10 6 10z"/><path d="M10 9h4l-1.4 1.8L14 13h-4"/></svg><span>Last stop passed</span></span></dt><dd>${escapeHtml(formatLastStop(vehicle.lastStopPassed))}</dd></div>
           </dl>
         </article>
