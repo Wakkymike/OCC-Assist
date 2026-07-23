@@ -1038,6 +1038,30 @@ def format_punctuality_label(delta_seconds: int, scheduled_at: datetime | None) 
     return f'{prefix} · {time_text}'
 
 
+def collect_stop_match_keys(stop: dict[str, object] | None) -> set[str]:
+    keys: set[str] = set()
+    if not isinstance(stop, dict):
+        return keys
+
+    for field in ('stopId', 'id', 'stopPointRef', 'stopRef', 'name', 'stopName'):
+        value = str(stop.get(field) or '').strip()
+        if not value:
+            continue
+        normalized = normalize_tracking_key(value)
+        if normalized:
+            keys.add(normalized)
+    return keys
+
+
+def stop_matches_schedule_entry(stop: dict[str, object] | None, schedule_entry: dict[str, object] | None) -> bool:
+    if not isinstance(stop, dict) or not isinstance(schedule_entry, dict):
+        return False
+
+    stop_keys = collect_stop_match_keys(stop)
+    schedule_keys = collect_stop_match_keys(schedule_entry)
+    return bool(stop_keys and schedule_keys and stop_keys.intersection(schedule_keys))
+
+
 def build_scheduled_stop_datetime(base_time: datetime | None, stop_time_value: object, first_stop_time_value: object | None = None) -> datetime | None:
     if base_time is None:
         return None
@@ -1069,8 +1093,8 @@ def calculate_vehicle_punctuality(
     if observed_time is None:
         observed_time = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
 
-    stop_id = str(last_stop.get('id') or last_stop.get('stopId') or '').strip() if isinstance(last_stop, dict) else ''
-    if not stop_id:
+    stop_keys = collect_stop_match_keys(last_stop)
+    if not stop_keys:
         return {
             'status': 'unknown',
             'tone': 'neutral',
@@ -1106,7 +1130,7 @@ def calculate_vehicle_punctuality(
         for stop_entry in trip_payload:
             if not isinstance(stop_entry, dict):
                 continue
-            if normalize_tracking_key(str(stop_entry.get('stopId') or '')) == normalize_tracking_key(stop_id):
+            if stop_matches_schedule_entry(last_stop, stop_entry):
                 schedule_entry = stop_entry
                 break
         if schedule_entry is None:
@@ -1126,7 +1150,7 @@ def calculate_vehicle_punctuality(
             'scheduledAt': None,
         }
 
-    trip_id, payload, schedule_entry = schedule_matches[0]
+    _, payload, schedule_entry = schedule_matches[0]
     base_time = parse_tracking_datetime(vehicle.get('originAimedDepartureTime')) or observed_time
     first_stop = None
     if isinstance(payload.get('stops'), list) and payload['stops']:
@@ -1637,6 +1661,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
 
     trip_points: dict[str, list[list[float]]] = {}
     trip_stop_sequences: dict[str, list[dict[str, object]]] = {}
+    trip_schedules: dict[str, dict[str, object]] = {}
     stops_lookup: dict[str, dict[str, object]] = {}
     if stops_path is not None and stop_times_path is not None:
         relevant_trip_ids = set().union(*route_trips.values()) if route_trips else set()
@@ -1662,6 +1687,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                 }
 
             raw_trip_points: dict[str, list[tuple[int, str]]] = {}
+            raw_trip_schedule_entries: dict[str, list[tuple[int, str, str, str]]] = {}
             with stop_times_path.open('r', encoding='utf-8-sig', newline='') as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
@@ -1676,7 +1702,10 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                         sequence = int(float(sequence_text or '0'))
                     except ValueError:
                         sequence = 0
+                    arrival_time = str(row.get('arrival_time') or '').strip()
+                    departure_time = str(row.get('departure_time') or '').strip()
                     raw_trip_points.setdefault(trip_id, []).append((sequence, stop_id))
+                    raw_trip_schedule_entries.setdefault(trip_id, []).append((sequence, stop_id, arrival_time, departure_time))
 
             for trip_id, entries in raw_trip_points.items():
                 coordinates: list[list[float]] = []
@@ -1701,6 +1730,26 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                     trip_points[trip_id] = coordinates
                 if len(stop_sequence) >= 2:
                     trip_stop_sequences[trip_id] = stop_sequence
+
+            for trip_id, entries in raw_trip_schedule_entries.items():
+                schedule_stops = []
+                for _, stop_id, arrival_time, departure_time in sorted(entries, key=lambda entry: entry[0]):
+                    stop_data = stops_lookup[stop_id]
+                    schedule_stops.append(
+                        {
+                            'stopId': stop_id,
+                            'name': stop_data['name'],
+                            'arrivalTime': arrival_time,
+                            'departureTime': departure_time,
+                        }
+                    )
+                if schedule_stops:
+                    trip_schedules[trip_id] = {
+                        'tripId': trip_id,
+                        'routeId': trip_routes.get(trip_id, ''),
+                        'direction': trip_directions.get(trip_id, 'unknown'),
+                        'stops': schedule_stops,
+                    }
 
     route_items: list[dict[str, object]] = []
     features: list[dict[str, object]] = []
@@ -1839,6 +1888,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
         'routes': route_items,
         'stops': all_stops,
         'routeStopSequences': route_stop_sequences,
+        'tripSchedules': trip_schedules,
         'featureCollection': {
             'type': 'FeatureCollection',
             'features': features,
@@ -1855,6 +1905,20 @@ def load_gtfs_cache() -> dict[str, object] | None:
         return None
     if not isinstance(data, dict):
         return None
+    if not data.get('tripSchedules') and GTFS_UPLOAD_PATH.exists():
+        try:
+            raw = GTFS_UPLOAD_PATH.read_bytes()
+            extracted_dir = unzip_gtfs_archive(raw)
+            parsed = parse_gtfs_routes_from_directory(extracted_dir)
+        except (OSError, ValueError):
+            return data
+        data['routeStopSequences'] = parsed.get('routeStopSequences', {})
+        data['tripSchedules'] = parsed.get('tripSchedules', {})
+        data['stops'] = parsed.get('stops', [])
+        data['routes'] = parsed.get('routes', [])
+        data['featureCollection'] = parsed.get('featureCollection', {})
+        data['routeCount'] = parsed.get('routeCount', 0)
+        save_gtfs_data(raw, parsed, str(data.get('originalFilename') or GTFS_UPLOAD_PATH.name))
     return data
 
 
@@ -1869,6 +1933,7 @@ def save_gtfs_data(zip_bytes: bytes, parsed: dict[str, object], original_filenam
         'routes': parsed['routes'],
         'stops': parsed.get('stops', []),
         'routeStopSequences': parsed.get('routeStopSequences', {}),
+        'tripSchedules': parsed.get('tripSchedules', {}),
         'featureCollection': parsed['featureCollection'],
     }
     GTFS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
