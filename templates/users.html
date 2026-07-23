@@ -46,10 +46,10 @@
 
     <section class="admin-card gtfs-upload-card">
       <div class="section-row">
-        <h2>Static Route Data (GTFS)</h2>
+        <h2>Timetable data (GTFS)</h2>
         <button class="btn secondary compact" type="button" id="refresh-gtfs-status">Refresh status</button>
       </div>
-      <p class="section-copy">Upload a zipped GTFS file from BODS so Tracking can display static route paths for each route.</p>
+      <p class="section-copy">Upload a timetable ZIP containing GTFS files such as routes.txt, trips.txt, stops.txt and stop_times.txt. The app uses it for route overlays and timetable-based stop matching even when no live BODS feed is available.</p>
       <form id="gtfs-upload-form" class="gtfs-upload-form" enctype="multipart/form-data" novalidate>
         <div class="field">
           <label for="gtfs-file">GTFS ZIP file</label>

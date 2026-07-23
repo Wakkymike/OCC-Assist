@@ -894,7 +894,7 @@ def calculate_domestic_compliance(segments: list[dict[str, object]]) -> dict[str
 def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
     feed_url = get_bods_feed_url()
     if not feed_url:
-        raise RuntimeError('BODS feed credentials are not configured.')
+        return [], ''
 
     try:
         with urlopen(feed_url, timeout=20) as response:
@@ -2059,22 +2059,26 @@ def tracking_static_routes():
 @app.get('/api/tracking/vehicles')
 @login_required('tracking')
 def tracking_vehicles():
+    cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
+
     try:
         vehicles, source_timestamp = fetch_bods_vehicles()
-    except RuntimeError as error:
-        cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
+    except Exception:
+        vehicles = []
+        source_timestamp = ''
+
+    if not vehicles:
         return jsonify(
             {
-                'ok': False,
-                'message': str(error),
+                'ok': True,
+                'message': 'No live vehicle feed is available right now. Upload a timetable ZIP in Users to enable timetable-based tracking.',
                 'vehicles': [],
-                'sourceTimestamp': None,
+                'sourceTimestamp': source_timestamp or None,
                 'refreshedAt': datetime.now(timezone.utc).isoformat(),
                 'configured': bool(cache and cache.get('stops')),
             }
-        ), 503
+        )
 
-    cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
     enriched_vehicles = enrich_tracking_vehicles(vehicles, cache)
 
     return jsonify(

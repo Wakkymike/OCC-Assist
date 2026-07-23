@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
-from app import calculate_vehicle_punctuality
+import app as app_module
+from app import calculate_vehicle_punctuality, fetch_bods_vehicles
 
 
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
@@ -82,3 +83,12 @@ def test_vehicle_punctuality_uses_stop_name_when_stop_id_is_missing():
 
     assert punctuality['status'] == 'on-time'
     assert punctuality['deltaSeconds'] == 0
+
+
+def test_fetch_bods_vehicles_returns_empty_when_feed_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(app_module, 'get_bods_feed_url', lambda: None)
+
+    vehicles, source_timestamp = fetch_bods_vehicles()
+
+    assert vehicles == []
+    assert source_timestamp == ''
