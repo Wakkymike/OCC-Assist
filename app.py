@@ -1075,10 +1075,15 @@ def build_scheduled_stop_datetime(base_time: datetime | None, stop_time_value: o
     if first_seconds is not None and stop_seconds < first_seconds:
         candidate_time = base_time + timedelta(days=1)
 
-    hours, remainder = divmod(stop_seconds, 3600)
+    day_offset = stop_seconds // 86400
+    if day_offset:
+        candidate_time = candidate_time + timedelta(days=day_offset)
+
+    seconds_within_day = stop_seconds % 86400
+    hours, remainder = divmod(seconds_within_day, 3600)
     minutes, seconds = divmod(remainder, 60)
     scheduled_date = candidate_time.date()
-    return datetime(scheduled_date.year, scheduled_date.month, scheduled_date.day, hours % 24, minutes, seconds, tzinfo=timezone.utc)
+    return datetime(scheduled_date.year, scheduled_date.month, scheduled_date.day, hours, minutes, seconds, tzinfo=timezone.utc)
 
 
 def calculate_vehicle_punctuality(

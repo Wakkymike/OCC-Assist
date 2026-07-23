@@ -85,6 +85,35 @@ def test_vehicle_punctuality_uses_stop_name_when_stop_id_is_missing():
     assert punctuality['deltaSeconds'] == 0
 
 
+def test_vehicle_punctuality_handles_gtfs_times_after_midnight():
+    vehicle = {
+        'recordedAt': '2024-01-02T00:10:00+00:00',
+        'originAimedDepartureTime': '2024-01-01T00:00:00+00:00',
+    }
+    last_stop = {'id': 'stop-1', 'name': 'Test Stop'}
+    trip_schedules = {
+        'trip-1': {
+            'routeId': 'route-1',
+            'direction': 'outbound',
+            'stops': [
+                {'stopId': 'stop-1', 'name': 'Test Stop', 'arrivalTime': '24:10:00', 'departureTime': '24:10:00'},
+            ],
+        }
+    }
+
+    punctuality = calculate_vehicle_punctuality(
+        vehicle,
+        last_stop,
+        trip_schedules,
+        route_id='route-1',
+        direction='outbound',
+        reference_time='2024-01-02T00:10:00+00:00',
+    )
+
+    assert punctuality['status'] == 'on-time'
+    assert punctuality['deltaSeconds'] == 0
+
+
 def test_fetch_bods_vehicles_returns_empty_when_feed_is_unconfigured(monkeypatch):
     monkeypatch.setattr(app_module, 'get_bods_feed_url', lambda: None)
 
