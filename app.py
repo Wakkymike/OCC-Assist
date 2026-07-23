@@ -1013,6 +1013,63 @@ def parse_gtfs_time(value: object) -> int | None:
     return hours * 3600 + minutes * 60 + seconds
 
 
+def build_gtfs_service_calendar(extracted_dir: Path) -> dict[str, list[str]]:
+    calendar_path = find_gtfs_file(extracted_dir, 'calendar.txt')
+    calendar_dates_path = find_gtfs_file(extracted_dir, 'calendar_dates.txt')
+    active_dates: dict[str, set[str]] = {}
+
+    if calendar_path is not None:
+        for row in read_gtfs_rows(calendar_path):
+            service_id = str(row.get('service_id') or '').strip()
+            if not service_id:
+                continue
+            start_text = str(row.get('start_date') or '').strip()
+            end_text = str(row.get('end_date') or '').strip()
+            if not start_text or not end_text:
+                continue
+            try:
+                start_date = datetime.strptime(start_text, '%Y%m%d').date()
+                end_date = datetime.strptime(end_text, '%Y%m%d').date()
+            except ValueError:
+                continue
+
+            weekday_columns = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            weekday_flags = [str(row.get(column) or '0').strip() for column in weekday_columns]
+
+            current_date = start_date
+            while current_date <= end_date:
+                weekday_index = current_date.weekday()
+                if weekday_flags[weekday_index] == '1':
+                    active_dates.setdefault(service_id, set()).add(current_date.strftime('%Y%m%d'))
+                current_date += timedelta(days=1)
+
+    if calendar_dates_path is not None:
+        for row in read_gtfs_rows(calendar_dates_path):
+            service_id = str(row.get('service_id') or '').strip()
+            date_text = str(row.get('date') or '').strip()
+            exception_type = str(row.get('exception_type') or '0').strip()
+            if not service_id or not date_text:
+                continue
+            if exception_type == '1':
+                active_dates.setdefault(service_id, set()).add(date_text)
+            elif exception_type == '2':
+                active_dates.setdefault(service_id, set()).discard(date_text)
+
+    return {service_id: sorted(dates) for service_id, dates in active_dates.items()}
+
+
+def service_is_active(service_id: str, service_calendar: dict[str, list[str]] | None, target_date: datetime | None) -> bool:
+    if not service_id:
+        return True
+    if not service_calendar:
+        return True
+    if target_date is None:
+        return True
+
+    active_dates = service_calendar.get(service_id, [])
+    return target_date.strftime('%Y%m%d') in {str(value) for value in active_dates}
+
+
 def format_punctuality_delta(delta_seconds: int) -> str:
     if delta_seconds == 0:
         return '0m'
@@ -1051,6 +1108,23 @@ def collect_stop_match_keys(stop: dict[str, object] | None) -> set[str]:
         if normalized:
             keys.add(normalized)
     return keys
+
+
+def find_stop_index(stop: dict[str, object] | None, stop_sequence: list[dict[str, object]] | None) -> int | None:
+    if not isinstance(stop, dict) or not isinstance(stop_sequence, list):
+        return None
+
+    stop_keys = collect_stop_match_keys(stop)
+    if not stop_keys:
+        return None
+
+    for index, candidate in enumerate(stop_sequence):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_keys = collect_stop_match_keys(candidate)
+        if stop_keys.intersection(candidate_keys):
+            return index
+    return None
 
 
 def stop_matches_schedule_entry(stop: dict[str, object] | None, schedule_entry: dict[str, object] | None) -> bool:
@@ -1093,6 +1167,8 @@ def calculate_vehicle_punctuality(
     route_id: str | None = None,
     direction: str | None = None,
     reference_time: object | None = None,
+    route_sequence: dict[str, object] | None = None,
+    service_calendar: dict[str, list[str]] | None = None,
 ) -> dict[str, object]:
     observed_time = parse_tracking_datetime(vehicle.get('recordedAt') or vehicle.get('sourceTimestamp') or vehicle.get('refreshedAt') or reference_time)
     if observed_time is None:
@@ -1119,6 +1195,7 @@ def calculate_vehicle_punctuality(
     ] if value]
 
     schedule_matches: list[tuple[str, dict[str, object], dict[str, object]]] = []
+    route_stop_index = find_stop_index(last_stop, route_sequence.get('stops', []) if isinstance(route_sequence, dict) else None)
     for trip_id, payload in trip_schedules.items():
         if not isinstance(payload, dict):
             continue
@@ -1130,6 +1207,8 @@ def calculate_vehicle_punctuality(
         if normalized_route and payload_route and normalized_route != payload_route:
             continue
         if normalized_direction and payload_direction and normalized_direction != 'unknown' and payload_direction != 'unknown' and normalized_direction != payload_direction:
+            continue
+        if not service_is_active(str(payload.get('serviceId') or ''), service_calendar, observed_time.astimezone(LONDON_TZ)):
             continue
 
         matching_entries: list[dict[str, object]] = []
@@ -1171,6 +1250,10 @@ def calculate_vehicle_punctuality(
 
         delta_seconds = int((observed_time - scheduled_at).total_seconds())
         candidate_key = abs(delta_seconds)
+        if route_stop_index is not None:
+            stop_index = find_stop_index(schedule_entry, payload.get('stops', []) if isinstance(payload.get('stops'), list) else None)
+            if stop_index is not None:
+                candidate_key += abs(route_stop_index - stop_index) * 60
         if best_choice is None or candidate_key < best_choice[3]:
             best_choice = (payload, schedule_entry, scheduled_at, candidate_key)
 
@@ -1369,6 +1452,7 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
     all_stops = [stop for stop in (cache or {}).get('stops', []) if isinstance(stop, dict)]
     enriched: list[dict[str, object]] = []
     trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
+    service_calendar = cache.get('serviceCalendar', {}) if isinstance(cache, dict) else {}
 
     for vehicle in vehicles:
         service = str(vehicle.get('service') or '').strip()
@@ -1411,13 +1495,7 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
             route_id=route_id or service,
             direction=direction,
             reference_time=vehicle.get('recordedAt') or vehicle.get('sourceTimestamp') or vehicle.get('refreshedAt'),
-        )
-
-        enriched.append(
-            {
-                **vehicle,
-                'routeId': route_id or None,
-                'routeLabel': route_label,
+            service_calendar=service_calendar,
                 'boardNumber': board_number,
                 'punctuality': punctuality,
                 'lastStopPassed': (
@@ -1640,10 +1718,12 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     route_trips: dict[str, set[str]] = {}
     trip_routes: dict[str, str] = {}
     trip_directions: dict[str, str] = {}
+    trip_service_ids: dict[str, str] = {}
     for row in trip_rows:
         route_id = str(row.get('route_id') or '').strip()
         trip_id = str(row.get('trip_id') or '').strip()
         shape_id = str(row.get('shape_id') or '').strip()
+        service_id = str(row.get('service_id') or '').strip()
         direction = normalize_gtfs_direction(str(row.get('direction_id') or ''))
         if not route_id:
             continue
@@ -1653,6 +1733,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             route_trips.setdefault(route_id, set()).add(trip_id)
             trip_routes[trip_id] = route_id
             trip_directions[trip_id] = direction
+            trip_service_ids[trip_id] = service_id
         if shape_id:
             route_shapes.setdefault(route_id, set()).add(shape_id)
             route_shape_directions.setdefault(route_id, {}).setdefault(shape_id, set()).add(direction)
@@ -1681,6 +1762,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     trip_stop_sequences: dict[str, list[dict[str, object]]] = {}
     trip_schedules: dict[str, dict[str, object]] = {}
     stops_lookup: dict[str, dict[str, object]] = {}
+    service_calendar = build_gtfs_service_calendar(extracted_dir)
     if stops_path is not None and stop_times_path is not None:
         relevant_trip_ids = set().union(*route_trips.values()) if route_trips else set()
         if relevant_trip_ids:
@@ -1766,6 +1848,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                         'tripId': trip_id,
                         'routeId': trip_routes.get(trip_id, ''),
                         'direction': trip_directions.get(trip_id, 'unknown'),
+                        'serviceId': trip_service_ids.get(trip_id, ''),
                         'stops': schedule_stops,
                     }
 
@@ -1907,6 +1990,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
         'stops': all_stops,
         'routeStopSequences': route_stop_sequences,
         'tripSchedules': trip_schedules,
+        'serviceCalendar': service_calendar,
         'featureCollection': {
             'type': 'FeatureCollection',
             'features': features,
@@ -1923,7 +2007,7 @@ def load_gtfs_cache(allow_rebuild: bool = False) -> dict[str, object] | None:
         return None
     if not isinstance(data, dict):
         return None
-    if allow_rebuild and not data.get('tripSchedules') and GTFS_UPLOAD_PATH.exists():
+    if allow_rebuild and ((not data.get('tripSchedules') and GTFS_UPLOAD_PATH.exists()) or not data.get('serviceCalendar')) and GTFS_UPLOAD_PATH.exists():
         try:
             raw = GTFS_UPLOAD_PATH.read_bytes()
             extracted_dir = unzip_gtfs_archive(raw)
@@ -1932,6 +2016,7 @@ def load_gtfs_cache(allow_rebuild: bool = False) -> dict[str, object] | None:
             return data
         data['routeStopSequences'] = parsed.get('routeStopSequences', {})
         data['tripSchedules'] = parsed.get('tripSchedules', {})
+        data['serviceCalendar'] = parsed.get('serviceCalendar', {})
         data['stops'] = parsed.get('stops', [])
         data['routes'] = parsed.get('routes', [])
         data['featureCollection'] = parsed.get('featureCollection', {})
@@ -1952,6 +2037,7 @@ def save_gtfs_data(zip_bytes: bytes, parsed: dict[str, object], original_filenam
         'stops': parsed.get('stops', []),
         'routeStopSequences': parsed.get('routeStopSequences', {}),
         'tripSchedules': parsed.get('tripSchedules', {}),
+        'serviceCalendar': parsed.get('serviceCalendar', {}),
         'featureCollection': parsed['featureCollection'],
     }
     GTFS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')

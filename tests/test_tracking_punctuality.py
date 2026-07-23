@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import app as app_module
-from app import calculate_vehicle_punctuality, fetch_bods_vehicles
+from app import calculate_vehicle_punctuality, fetch_bods_vehicles, service_is_active
 
 
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
@@ -112,6 +112,13 @@ def test_vehicle_punctuality_handles_gtfs_times_after_midnight():
 
     assert punctuality['status'] == 'on-time'
     assert punctuality['deltaSeconds'] == 0
+
+
+def test_service_is_active_uses_calendar_dates():
+    service_calendar = {'service-1': ['20240102']}
+
+    assert service_is_active('service-1', service_calendar, datetime(2024, 1, 2, tzinfo=timezone.utc)) is True
+    assert service_is_active('service-1', service_calendar, datetime(2024, 1, 3, tzinfo=timezone.utc)) is False
 
 
 def test_fetch_bods_vehicles_returns_empty_when_feed_is_unconfigured(monkeypatch):
