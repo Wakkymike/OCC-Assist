@@ -1530,9 +1530,9 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
         elif route_direction_sequences:
             selected_sequence = next(iter(route_direction_sequences.values()))
 
-        last_stop = select_nearest_route_stop(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
+        last_stop = select_last_stop_passed(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
         if last_stop is None:
-            last_stop = select_last_stop_passed(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
+            last_stop = select_nearest_route_stop(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
         if last_stop is None and all_stops:
             last_stop = select_nearest_stop(vehicle, all_stops)
 
