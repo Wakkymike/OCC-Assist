@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import app as app_module
-from app import calculate_vehicle_punctuality, fetch_bods_vehicles, service_is_active
+from app import calculate_vehicle_punctuality, fetch_bods_vehicles, select_nearest_route_stop, service_is_active
 
 
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
@@ -203,6 +203,21 @@ def test_vehicle_punctuality_prefers_arrival_times_when_present():
 
     assert punctuality['status'] == 'early'
     assert punctuality['deltaSeconds'] < 0
+
+
+def test_select_nearest_route_stop_uses_the_closest_stop_on_the_route():
+    vehicle = {'latitude': 53.57, 'longitude': -2.43}
+    route_sequence = {
+        'stops': [
+            {'id': 'stop-1', 'name': 'First Stop', 'latitude': 53.5702, 'longitude': -2.4302},
+            {'id': 'stop-2', 'name': 'Second Stop', 'latitude': 53.5708, 'longitude': -2.4308},
+        ]
+    }
+
+    stop = select_nearest_route_stop(vehicle, route_sequence)
+
+    assert stop is not None
+    assert stop['id'] == 'stop-1'
 
 
 def test_service_is_active_uses_calendar_dates():

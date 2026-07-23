@@ -1440,6 +1440,20 @@ def select_nearest_stop(
     return best_stop
 
 
+def select_nearest_route_stop(
+    vehicle: dict[str, object],
+    route_sequence: dict[str, object] | None,
+    max_distance_meters: float = 250.0,
+) -> dict[str, object] | None:
+    if not isinstance(route_sequence, dict):
+        return None
+
+    stops = route_sequence.get('stops', [])
+    if not isinstance(stops, list):
+        return None
+    return select_nearest_stop(vehicle, [stop for stop in stops if isinstance(stop, dict)], max_distance_meters=max_distance_meters)
+
+
 def build_tracking_route_lookup(cache: dict[str, object] | None) -> dict[str, dict[str, object]]:
     if not cache:
         return {}
@@ -1516,7 +1530,9 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
         elif route_direction_sequences:
             selected_sequence = next(iter(route_direction_sequences.values()))
 
-        last_stop = select_last_stop_passed(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
+        last_stop = select_nearest_route_stop(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
+        if last_stop is None:
+            last_stop = select_last_stop_passed(vehicle, selected_sequence if isinstance(selected_sequence, dict) else None)
         if last_stop is None and all_stops:
             last_stop = select_nearest_stop(vehicle, all_stops)
 
