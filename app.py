@@ -1190,7 +1190,7 @@ def calculate_vehicle_punctuality(
         observed_time = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
 
     stop_keys = collect_stop_match_keys(last_stop)
-    if not stop_keys:
+    if not stop_keys and not (isinstance(route_sequence, dict) and isinstance(route_sequence.get('stops'), list)):
         return {
             'status': 'unknown',
             'tone': 'neutral',
@@ -1226,12 +1226,18 @@ def calculate_vehicle_punctuality(
         if not service_is_active(str(payload.get('serviceId') or ''), service_calendar, observed_time.astimezone(LONDON_TZ)):
             continue
 
-        matching_entries: list[tuple[int, dict[str, object]]] = []
+        matching_entries: list[tuple[int, dict[str, object], int]] = []
         for index, stop_entry in enumerate(trip_payload):
             if not isinstance(stop_entry, dict):
                 continue
-            if stop_matches_schedule_entry(last_stop, stop_entry):
-                matching_entries.append((index, stop_entry))
+            exact_match = stop_matches_schedule_entry(last_stop, stop_entry)
+            if exact_match:
+                penalty = 0
+            elif route_stop_index is not None:
+                penalty = abs(route_stop_index - index) * 15 + 100
+            else:
+                penalty = 1000
+            matching_entries.append((index, stop_entry, penalty))
 
         if not matching_entries:
             continue
@@ -1239,16 +1245,7 @@ def calculate_vehicle_punctuality(
         best_index = None
         best_entry = None
         best_penalty = None
-        for stop_index, stop_entry in matching_entries:
-            penalty = None
-            if route_stop_index is not None:
-                penalty = abs(route_stop_index - stop_index)
-            elif best_penalty is None:
-                penalty = 0
-
-            if penalty is None:
-                penalty = 0
-
+        for stop_index, stop_entry, penalty in matching_entries:
             if best_entry is None or penalty < best_penalty or (penalty == best_penalty and stop_index > (best_index or -1)):
                 best_index = stop_index
                 best_entry = stop_entry

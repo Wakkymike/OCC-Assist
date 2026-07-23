@@ -147,6 +147,39 @@ def test_vehicle_punctuality_prefers_the_matching_stop_in_the_route_position():
     assert punctuality['deltaSeconds'] < 0
 
 
+def test_vehicle_punctuality_falls_back_to_route_position_when_stop_ids_do_not_match():
+    vehicle = {
+        'recordedAt': '2024-01-01T12:15:00+00:00',
+        'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
+    }
+    last_stop = {'id': 'unknown-stop', 'name': 'Current position'}
+    trip_schedules = {
+        'trip-1': {
+            'routeId': 'route-1',
+            'direction': 'outbound',
+            'stops': [
+                {'stopId': 'stop-1', 'name': 'First Stop', 'arrivalTime': '12:00:00', 'departureTime': '12:00:00'},
+                {'stopId': 'stop-2', 'name': 'Second Stop', 'arrivalTime': '12:10:00', 'departureTime': '12:10:00'},
+            ],
+        }
+    }
+    route_sequence = {'stops': [{'id': 'stop-1'}, {'id': 'stop-2'}]}
+
+    punctuality = calculate_vehicle_punctuality(
+        vehicle,
+        last_stop,
+        trip_schedules,
+        route_id='route-1',
+        direction='outbound',
+        reference_time='2024-01-01T12:15:00+00:00',
+        route_sequence=route_sequence,
+    )
+
+    assert punctuality['status'] == 'early'
+    assert punctuality['deltaSeconds'] < 0
+    assert punctuality['label'] != 'Unknown'
+
+
 def test_vehicle_punctuality_uses_the_closest_service_day_for_midnight_services():
     vehicle = {
         'recordedAt': '2024-01-02T00:00:00+00:00',
@@ -218,6 +251,21 @@ def test_select_nearest_route_stop_uses_the_closest_stop_on_the_route():
 
     assert stop is not None
     assert stop['id'] == 'stop-1'
+
+
+def test_select_last_stop_passed_prefers_the_stop_closest_to_the_vehicle_on_the_route():
+    vehicle = {'latitude': 53.5705, 'longitude': -2.4305}
+    route_sequence = {
+        'stops': [
+            {'id': 'stop-1', 'name': 'First Stop', 'latitude': 53.5702, 'longitude': -2.4302},
+            {'id': 'stop-2', 'name': 'Second Stop', 'latitude': 53.5708, 'longitude': -2.4308},
+        ]
+    }
+
+    stop = app_module.select_last_stop_passed(vehicle, route_sequence)
+
+    assert stop is not None
+    assert stop['id'] == 'stop-2'
 
 
 def test_service_is_active_uses_calendar_dates():
