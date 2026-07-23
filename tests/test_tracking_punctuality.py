@@ -114,6 +114,39 @@ def test_vehicle_punctuality_handles_gtfs_times_after_midnight():
     assert punctuality['deltaSeconds'] == 0
 
 
+def test_vehicle_punctuality_prefers_the_matching_stop_in_the_route_position():
+    vehicle = {
+        'recordedAt': '2024-01-01T12:15:00+00:00',
+        'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
+    }
+    last_stop = {'id': 'stop-2', 'name': 'Second Stop'}
+    trip_schedules = {
+        'trip-1': {
+            'routeId': 'route-1',
+            'direction': 'outbound',
+            'stops': [
+                {'stopId': 'stop-1', 'name': 'First Stop', 'arrivalTime': '12:00:00', 'departureTime': '12:00:00'},
+                {'stopId': 'stop-2', 'name': 'Second Stop', 'arrivalTime': '12:10:00', 'departureTime': '12:10:00'},
+                {'stopId': 'stop-2', 'name': 'Second Stop', 'arrivalTime': '12:20:00', 'departureTime': '12:20:00'},
+            ],
+        }
+    }
+    route_sequence = {'stops': [{'id': 'stop-1'}, {'id': 'stop-2'}, {'id': 'stop-3'}]}
+
+    punctuality = calculate_vehicle_punctuality(
+        vehicle,
+        last_stop,
+        trip_schedules,
+        route_id='route-1',
+        direction='outbound',
+        reference_time='2024-01-01T12:15:00+00:00',
+        route_sequence=route_sequence,
+    )
+
+    assert punctuality['status'] == 'early'
+    assert punctuality['deltaSeconds'] < 0
+
+
 def test_service_is_active_uses_calendar_dates():
     service_calendar = {'service-1': ['20240102']}
 

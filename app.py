@@ -1211,17 +1211,38 @@ def calculate_vehicle_punctuality(
         if not service_is_active(str(payload.get('serviceId') or ''), service_calendar, observed_time.astimezone(LONDON_TZ)):
             continue
 
-        matching_entries: list[dict[str, object]] = []
-        for stop_entry in trip_payload:
+        matching_entries: list[tuple[int, dict[str, object]]] = []
+        for index, stop_entry in enumerate(trip_payload):
             if not isinstance(stop_entry, dict):
                 continue
             if stop_matches_schedule_entry(last_stop, stop_entry):
-                matching_entries.append(stop_entry)
+                matching_entries.append((index, stop_entry))
 
         if not matching_entries:
             continue
 
-        schedule_entry = matching_entries[0]
+        best_index = None
+        best_entry = None
+        best_penalty = None
+        for stop_index, stop_entry in matching_entries:
+            penalty = None
+            if route_stop_index is not None:
+                penalty = abs(route_stop_index - stop_index)
+            elif best_penalty is None:
+                penalty = 0
+
+            if penalty is None:
+                penalty = 0
+
+            if best_entry is None or penalty < best_penalty or (penalty == best_penalty and stop_index > (best_index or -1)):
+                best_index = stop_index
+                best_entry = stop_entry
+                best_penalty = penalty
+
+        if best_entry is None:
+            continue
+
+        schedule_entry = best_entry
         if normalize_tracking_key(str(trip_id)) in vehicle_identifiers:
             schedule_matches.insert(0, (str(trip_id), payload, schedule_entry))
         else:
