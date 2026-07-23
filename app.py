@@ -57,6 +57,7 @@ app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
 app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
 app.config['BODS_STALE_SECONDS'] = int(os.environ.get('OCC_ASSIST_BODS_STALE_SECONDS', '120'))
+app.config['SESSION_INACTIVITY_SECONDS'] = int(os.environ.get('OCC_ASSIST_SESSION_INACTIVITY_SECONDS', '3600'))
 app.config['STATIC_VERSION'] = str(int(max((BASE_DIR / 'static' / 'scripts.js').stat().st_mtime, (BASE_DIR / 'static' / 'styles.css').stat().st_mtime)))
 
 
@@ -254,9 +255,35 @@ def inject_user_context() -> dict[str, object]:
     }
 
 
+def parse_session_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
 @app.before_request
 def prepare_database() -> None:
     init_db()
+
+    session_timeout = app.config.get('SESSION_INACTIVITY_SECONDS', 3600)
+    if not isinstance(session_timeout, int):
+        try:
+            session_timeout = int(session_timeout)
+        except (TypeError, ValueError):
+            session_timeout = 3600
+
+    last_activity = parse_session_timestamp(session.get('last_activity'))
+    if session.get('user_id') and last_activity is not None:
+        if (datetime.now(timezone.utc) - last_activity).total_seconds() > session_timeout:
+            session.clear()
+            return
+
+    if session.get('user_id'):
+        session['last_activity'] = datetime.now(timezone.utc).isoformat()
+        session.modified = True
 
 
 @app.get('/')
@@ -281,6 +308,8 @@ def login():
 
     session.clear()
     session['user_id'] = user['id']
+    session['last_activity'] = datetime.now(timezone.utc).isoformat()
+    session.modified = True
     return jsonify({'ok': True, 'redirect': url_for('daily_overview')})
 
 
