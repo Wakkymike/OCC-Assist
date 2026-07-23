@@ -121,6 +121,34 @@ def test_service_is_active_uses_calendar_dates():
     assert service_is_active('service-1', service_calendar, datetime(2024, 1, 3, tzinfo=timezone.utc)) is False
 
 
+def test_enrich_tracking_vehicles_builds_payload_without_crashing():
+    cache = {
+        'routes': [{
+            'id': 'route-1',
+            'label': 'Route 1',
+            'lineName': 'Route 1',
+        }],
+        'routeStopSequences': {'route-1': {'outbound': {'stops': [{'id': 'stop-1', 'name': 'Test Stop'}]}}},
+        'stops': [{'id': 'stop-1', 'name': 'Test Stop'}],
+        'tripSchedules': {},
+        'serviceCalendar': {},
+    }
+    vehicles = [{
+        'id': 'vehicle-1',
+        'service': 'Route 1',
+        'direction': 'outbound',
+        'latitude': 53.57,
+        'longitude': -2.43,
+        'recordedAt': '2024-01-01T12:00:00+00:00',
+        'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
+    }]
+
+    enriched = app_module.enrich_tracking_vehicles(vehicles, cache)
+
+    assert len(enriched) == 1
+    assert enriched[0]['punctuality']['status'] == 'unknown'
+
+
 def test_fetch_bods_vehicles_returns_empty_when_feed_is_unconfigured(monkeypatch):
     monkeypatch.setattr(app_module, 'get_bods_feed_url', lambda: None)
 
