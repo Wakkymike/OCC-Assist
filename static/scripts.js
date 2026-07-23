@@ -701,10 +701,10 @@ function initializeServiceOverview() {
     }).join('');
 
     listEl.querySelectorAll('.service-group').forEach((group) => {
-      group.classList.remove('is-collapsed');
+      group.classList.add('is-collapsed');
       const toggle = group.querySelector('.service-group-toggle');
       if (toggle) {
-        toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-expanded', 'false');
       }
     });
   };
