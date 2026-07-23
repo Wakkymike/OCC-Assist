@@ -6,6 +6,7 @@ import json
 import csv
 import io
 import math
+import secrets
 import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -136,6 +137,20 @@ def init_db() -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_token TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_activity_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            active INTEGER NOT NULL DEFAULT 1,
+            ended_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_sessions_user_active
+        ON user_sessions (user_id, active, last_activity_at DESC);
         '''
     )
     database.commit()
@@ -195,6 +210,71 @@ def fetch_user_permissions(user_id: int) -> dict[str, bool]:
     for row in rows:
         permissions[row['permission_key']] = bool(row['enabled'])
     return permissions
+
+
+def ensure_user_session(database: sqlite3.Connection, user_id: int, session_token: str, now: datetime | None = None) -> None:
+    if not session_token:
+        return
+    timestamp = (now or datetime.now(timezone.utc)).isoformat()
+    database.execute(
+        '''
+        INSERT INTO user_sessions (user_id, session_token, created_at, last_activity_at, active)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(session_token) DO UPDATE SET
+            user_id = excluded.user_id,
+            last_activity_at = excluded.last_activity_at,
+            active = 1
+        ''',
+        (user_id, session_token, timestamp, timestamp),
+    )
+    database.commit()
+
+
+def invalidate_user_sessions(user_id: int, session_token: str | None = None) -> None:
+    database = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    if session_token:
+        database.execute(
+            'UPDATE user_sessions SET active = 0, ended_at = ? WHERE user_id = ? AND session_token = ? AND active = 1',
+            (now, user_id, session_token),
+        )
+    else:
+        database.execute(
+            'UPDATE user_sessions SET active = 0, ended_at = ? WHERE user_id = ? AND active = 1',
+            (now, user_id),
+        )
+    database.commit()
+
+
+def fetch_user_session_summary(user_id: int) -> dict[str, object]:
+    database = get_db()
+    row = database.execute(
+        '''
+        SELECT session_token, created_at, last_activity_at, active
+        FROM user_sessions
+        WHERE user_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        ''',
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return {'hasSession': False, 'isActive': False, 'sessionDurationSeconds': 0}
+
+    now = datetime.now(timezone.utc)
+    created_at = parse_session_timestamp(row['created_at']) or now
+    last_activity_at = parse_session_timestamp(row['last_activity_at']) or created_at
+    if bool(row['active']):
+        duration_seconds = max(0, int((now - created_at).total_seconds()))
+    else:
+        duration_seconds = max(0, int((last_activity_at - created_at).total_seconds()))
+
+    return {
+        'hasSession': True,
+        'isActive': bool(row['active']),
+        'sessionDurationSeconds': duration_seconds,
+        'sessionToken': row['session_token'],
+    }
 
 
 def get_current_user() -> dict[str, object] | None:
@@ -276,12 +356,18 @@ def prepare_database() -> None:
             session_timeout = 3600
 
     last_activity = parse_session_timestamp(session.get('last_activity'))
-    if session.get('user_id') and last_activity is not None:
-        if (datetime.now(timezone.utc) - last_activity).total_seconds() > session_timeout:
+    if session.get('user_id'):
+        user_id = int(session['user_id'])
+        session_token = str(session.get('session_token') or '').strip()
+        if not session_token:
+            session_token = secrets.token_urlsafe(24)
+            session['session_token'] = session_token
+        if last_activity is not None and (datetime.now(timezone.utc) - last_activity).total_seconds() > session_timeout:
+            invalidate_user_sessions(user_id, session_token)
             session.clear()
             return
 
-    if session.get('user_id'):
+        ensure_user_session(get_db(), user_id, session_token)
         session['last_activity'] = datetime.now(timezone.utc).isoformat()
         session.modified = True
 
@@ -307,14 +393,20 @@ def login():
         return jsonify({'ok': False, 'message': 'Incorrect email or password.'}), 401
 
     session.clear()
+    session_token = secrets.token_urlsafe(24)
     session['user_id'] = user['id']
+    session['session_token'] = session_token
     session['last_activity'] = datetime.now(timezone.utc).isoformat()
     session.modified = True
+    ensure_user_session(get_db(), int(user['id']), session_token)
     return jsonify({'ok': True, 'redirect': url_for('daily_overview')})
 
 
 @app.post('/api/logout')
 def logout():
+    session_token = str(session.get('session_token') or '').strip()
+    if session.get('user_id'):
+        invalidate_user_sessions(int(session['user_id']), session_token or None)
     session.clear()
     return jsonify({'ok': True, 'redirect': url_for('index')})
 
@@ -2490,6 +2582,7 @@ def list_users():
                 'isSuperadmin': bool(row['is_superadmin']),
                 'createdAt': row['created_at'],
                 'permissions': fetch_user_permissions(row['id']),
+                'session': fetch_user_session_summary(row['id']),
             }
         )
     return jsonify({'users': items, 'permissionLabels': PERMISSIONS})
@@ -2552,6 +2645,25 @@ def delete_user(user_id: int):
     database.execute('DELETE FROM users WHERE id = ?', (user_id,))
     database.commit()
     return jsonify({'ok': True, 'deletedUserId': user_id})
+
+
+@app.post('/api/users/<int:user_id>/sessions/force-logout')
+@login_required('user_management')
+def force_logout_user_sessions(user_id: int):
+    actor = get_current_user()
+    if actor is None:
+        abort(401)
+
+    target_user = get_db().execute('SELECT id, email, is_superadmin FROM users WHERE id = ?', (user_id,)).fetchone()
+    if target_user is None:
+        abort(404)
+    if int(target_user['id']) == int(actor['id']):
+        return jsonify({'ok': False, 'message': 'You cannot sign yourself out from this page.'}), 400
+    if bool(target_user['is_superadmin']) and not bool(actor['is_superadmin']):
+        return jsonify({'ok': False, 'message': 'Only superadmins can force logout superadmin accounts.'}), 403
+
+    invalidate_user_sessions(user_id)
+    return jsonify({'ok': True, 'userId': user_id})
 
 
 @app.patch('/api/users/<int:user_id>/permissions')

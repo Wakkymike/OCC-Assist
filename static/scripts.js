@@ -1652,32 +1652,59 @@ function initializeUsersPage() {
   });
 
   usersList.addEventListener('click', async (event) => {
-    const button = event.target.closest('[data-action="delete-user"]');
-    if (!button) {
+    const deleteButton = event.target.closest('[data-action="delete-user"]');
+    if (deleteButton) {
+      event.preventDefault();
+      const userId = deleteButton.dataset.userId;
+      const userEmail = deleteButton.dataset.userEmail || 'this user';
+      const isConfirmed = window.confirm(`Delete ${userEmail} and remove all of their saved data?`);
+
+      if (!isConfirmed) {
+        return;
+      }
+
+      setMessage(usersMessage, 'Deleting user and saved data...');
+      const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}`, {
+        method: 'DELETE',
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        setMessage(usersMessage, payload.message || 'Unable to delete user.', 'error');
+        return;
+      }
+
+      setMessage(usersMessage, 'User deleted and saved data removed.', 'success');
+      await loadUsers();
+      return;
+    }
+
+    const forceLogoutButton = event.target.closest('[data-action="force-logout"]');
+    if (!forceLogoutButton) {
       return;
     }
 
     event.preventDefault();
-    const userId = button.dataset.userId;
-    const userEmail = button.dataset.userEmail || 'this user';
-    const isConfirmed = window.confirm(`Delete ${userEmail} and remove all of their saved data?`);
+    const userId = forceLogoutButton.dataset.userId;
+    const userEmail = forceLogoutButton.dataset.userEmail || 'this user';
+    const isConfirmed = window.confirm(`End the current active session for ${userEmail}?`);
 
     if (!isConfirmed) {
       return;
     }
 
-    setMessage(usersMessage, 'Deleting user and saved data...');
-    const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}`, {
-      method: 'DELETE',
+    setMessage(usersMessage, 'Ending active session...');
+    const response = await fetch(`${window.OCC_ASSIST.permissionsBaseUrl}/${userId}/sessions/force-logout`, {
+      method: 'POST',
     });
     const payload = await response.json();
 
     if (!response.ok) {
-      setMessage(usersMessage, payload.message || 'Unable to delete user.', 'error');
+      setMessage(usersMessage, payload.message || 'Unable to end the active session.', 'error');
       return;
     }
 
-    setMessage(usersMessage, 'User deleted and saved data removed.', 'success');
+    setMessage(usersMessage, 'Active session ended.', 'success');
     await loadUsers();
   });
 
@@ -1764,8 +1791,19 @@ function renderUsers(container, users, permissionLabels) {
         .join('');
 
       const isSelf = Number(currentUser.id) === Number(user.id);
+      const session = user.session || {};
+      const sessionDurationLabel = session.sessionDurationSeconds != null
+        ? `${Math.max(0, Math.floor(Number(session.sessionDurationSeconds) / 60))} min`
+        : '0 min';
+      const sessionStatusLabel = session.isActive ? 'Active now' : 'No active session';
+      const sessionSummary = session.hasSession
+        ? `${sessionStatusLabel} • Signed in for ${sessionDurationLabel}`
+        : 'No active session';
       const deleteButtonMarkup = canDeleteUsers && !isSelf
         ? `<button class="btn danger compact" type="button" data-action="delete-user" data-user-id="${user.id}" data-user-email="${user.email}">Delete</button>`
+        : '';
+      const forceLogoutButtonMarkup = canDeleteUsers && !isSelf && session.isActive
+        ? `<button class="btn secondary compact" type="button" data-action="force-logout" data-user-id="${user.id}" data-user-email="${user.email}">Force logout</button>`
         : '';
 
       return `
@@ -1774,10 +1812,12 @@ function renderUsers(container, users, permissionLabels) {
             <div>
               <h3>${user.email}</h3>
               <p class="user-meta">Created ${user.createdAt}</p>
+              <p class="user-meta">${sessionSummary}</p>
             </div>
             <div class="user-card-actions">
               <span class="badge">${user.isSuperadmin ? 'Superadmin' : 'Standard user'}</span>
               ${deleteButtonMarkup}
+              ${forceLogoutButtonMarkup}
             </div>
           </div>
           <div class="permission-list">${permissionMarkup}</div>
