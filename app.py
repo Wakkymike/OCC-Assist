@@ -1070,29 +1070,12 @@ def service_is_active(service_id: str, service_calendar: dict[str, list[str]] | 
     return target_date.strftime('%Y%m%d') in {str(value) for value in active_dates}
 
 
-def format_punctuality_delta(delta_seconds: int) -> str:
-    if delta_seconds == 0:
-        return '0m'
-
-    minutes = int(round(abs(delta_seconds) / 60))
-    if minutes <= 0:
-        minutes = 1
-    return f'{minutes}m'
-
-
 def format_punctuality_label(delta_seconds: int, scheduled_at: datetime | None) -> str:
     if delta_seconds < 0:
-        prefix = f'Early -{format_punctuality_delta(delta_seconds)}'
-    elif delta_seconds > 0:
-        prefix = f'Late +{format_punctuality_delta(delta_seconds)}'
-    else:
-        prefix = 'On time 0m'
-
-    if scheduled_at is None:
-        return prefix
-
-    time_text = scheduled_at.astimezone(timezone.utc).strftime('%H:%M')
-    return f'{prefix} · {time_text}'
+        return 'Early'
+    if delta_seconds > 0:
+        return 'Late'
+    return 'On time'
 
 
 def collect_stop_match_keys(stop: dict[str, object] | None) -> set[str]:
@@ -1494,10 +1477,13 @@ def select_last_stop_passed(vehicle: dict[str, object], route_sequence: dict[str
 
     cumulative = cumulative_path_distances(path)
     selected_stop: dict[str, object] | None = None
+    best_distance: float | None = None
     for stop, stop_along in zip(stops, cumulative):
         if not isinstance(stop, dict):
             continue
-        if stop_along <= projection['along'] + 30:
+        distance = abs(stop_along - projection['along'])
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
             selected_stop = stop
 
     return selected_stop
