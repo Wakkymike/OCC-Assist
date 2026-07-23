@@ -2062,7 +2062,17 @@ def tracking_vehicles():
     try:
         vehicles, source_timestamp = fetch_bods_vehicles()
     except RuntimeError as error:
-        return jsonify({'ok': False, 'message': str(error)}), 503
+        cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
+        return jsonify(
+            {
+                'ok': False,
+                'message': str(error),
+                'vehicles': [],
+                'sourceTimestamp': None,
+                'refreshedAt': datetime.now(timezone.utc).isoformat(),
+                'configured': bool(cache and cache.get('stops')),
+            }
+        ), 503
 
     cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
     enriched_vehicles = enrich_tracking_vehicles(vehicles, cache)
