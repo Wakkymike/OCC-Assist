@@ -176,6 +176,35 @@ def test_vehicle_punctuality_uses_the_closest_service_day_for_midnight_services(
     assert punctuality['deltaSeconds'] == -600
 
 
+def test_vehicle_punctuality_prefers_arrival_times_when_present():
+    vehicle = {
+        'recordedAt': '2024-01-01T12:15:00+00:00',
+        'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
+    }
+    last_stop = {'id': 'stop-1', 'name': 'Test Stop'}
+    trip_schedules = {
+        'trip-1': {
+            'routeId': 'route-1',
+            'direction': 'outbound',
+            'stops': [
+                {'stopId': 'stop-1', 'name': 'Test Stop', 'arrivalTime': '12:10:00', 'departureTime': '12:20:00'},
+            ],
+        }
+    }
+
+    punctuality = calculate_vehicle_punctuality(
+        vehicle,
+        last_stop,
+        trip_schedules,
+        route_id='route-1',
+        direction='outbound',
+        reference_time='2024-01-01T12:15:00+00:00',
+    )
+
+    assert punctuality['status'] == 'early'
+    assert punctuality['deltaSeconds'] < 0
+
+
 def test_service_is_active_uses_calendar_dates():
     service_calendar = {'service-1': ['20240102']}
 

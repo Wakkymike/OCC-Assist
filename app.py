@@ -1136,6 +1136,15 @@ def stop_matches_schedule_entry(stop: dict[str, object] | None, schedule_entry: 
     return bool(stop_keys and schedule_keys and stop_keys.intersection(schedule_keys))
 
 
+def get_schedule_time_value(schedule_entry: dict[str, object] | None) -> str:
+    if not isinstance(schedule_entry, dict):
+        return ''
+    arrival_time = str(schedule_entry.get('arrivalTime') or '').strip()
+    if arrival_time:
+        return arrival_time
+    return str(schedule_entry.get('departureTime') or '').strip()
+
+
 def build_scheduled_stop_datetime(base_time: datetime | None, stop_time_value: object, first_stop_time_value: object | None = None) -> datetime | None:
     if base_time is None:
         return None
@@ -1277,8 +1286,8 @@ def calculate_vehicle_punctuality(
         first_stop = None
         if isinstance(payload.get('stops'), list) and payload['stops']:
             first_stop = next((entry for entry in payload['stops'] if isinstance(entry, dict)), None)
-        first_stop_time = first_stop.get('departureTime') or first_stop.get('arrivalTime') if first_stop else None
-        scheduled_at = build_scheduled_stop_datetime(observed_time, schedule_entry.get('departureTime') or schedule_entry.get('arrivalTime'), first_stop_time)
+        first_stop_time = get_schedule_time_value(first_stop) if first_stop else ''
+        scheduled_at = build_scheduled_stop_datetime(observed_time, get_schedule_time_value(schedule_entry), first_stop_time)
         if scheduled_at is None:
             continue
 
