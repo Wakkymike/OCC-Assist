@@ -997,88 +997,170 @@ def parse_tracking_datetime(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def parse_gtfs_time(value: object) -> int | None:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    parts = text.split(':')
+    if len(parts) < 2:
+        return None
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        return None
+    return hours * 3600 + minutes * 60 + seconds
+
+
 def format_punctuality_delta(delta_seconds: int) -> str:
     if delta_seconds == 0:
-        return 'On time'
+        return '0m'
 
-    sign = 'Early' if delta_seconds < 0 else 'Late'
-    absolute_seconds = abs(delta_seconds)
-    minutes, seconds = divmod(absolute_seconds, 60)
-    hours, minutes = divmod(minutes, 60)
+    minutes = int(round(abs(delta_seconds) / 60))
+    if minutes <= 0:
+        minutes = 1
+    return f'{minutes}m'
 
-    pieces: list[str] = []
-    if hours:
-        pieces.append(f'{hours}h')
-    if minutes:
-        pieces.append(f'{minutes}m')
-    if seconds or not pieces:
-        pieces.append(f'{seconds}s')
 
-    return f'{sign} {" ".join(pieces)}'
+def format_punctuality_label(delta_seconds: int, scheduled_at: datetime | None) -> str:
+    if delta_seconds < 0:
+        prefix = f'Early -{format_punctuality_delta(delta_seconds)}'
+    elif delta_seconds > 0:
+        prefix = f'Late +{format_punctuality_delta(delta_seconds)}'
+    else:
+        prefix = 'On time 0m'
+
+    if scheduled_at is None:
+        return prefix
+
+    time_text = scheduled_at.astimezone(timezone.utc).strftime('%H:%M')
+    return f'{prefix} · {time_text}'
+
+
+def build_scheduled_stop_datetime(base_time: datetime | None, stop_time_value: object, first_stop_time_value: object | None = None) -> datetime | None:
+    if base_time is None:
+        return None
+
+    stop_seconds = parse_gtfs_time(stop_time_value)
+    if stop_seconds is None:
+        return None
+
+    first_seconds = parse_gtfs_time(first_stop_time_value) if first_stop_time_value is not None else None
+    candidate_time = base_time
+    if first_seconds is not None and stop_seconds < first_seconds:
+        candidate_time = base_time + timedelta(days=1)
+
+    hours, remainder = divmod(stop_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    scheduled_date = candidate_time.date()
+    return datetime(scheduled_date.year, scheduled_date.month, scheduled_date.day, hours % 24, minutes, seconds, tzinfo=timezone.utc)
 
 
 def calculate_vehicle_punctuality(
     vehicle: dict[str, object],
-    route_sequence: dict[str, object] | None,
+    last_stop: dict[str, object] | None,
+    trip_schedules: dict[str, object],
+    route_id: str | None = None,
+    direction: str | None = None,
     reference_time: object | None = None,
 ) -> dict[str, object]:
     observed_time = parse_tracking_datetime(vehicle.get('recordedAt') or vehicle.get('sourceTimestamp') or vehicle.get('refreshedAt') or reference_time)
     if observed_time is None:
         observed_time = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
 
-    origin_time = parse_tracking_datetime(vehicle.get('originAimedDepartureTime'))
-    arrival_time = parse_tracking_datetime(vehicle.get('destinationAimedArrivalTime'))
-
-    if origin_time is None or arrival_time is None or arrival_time <= origin_time:
+    stop_id = str(last_stop.get('id') or last_stop.get('stopId') or '').strip() if isinstance(last_stop, dict) else ''
+    if not stop_id:
         return {
             'status': 'unknown',
             'tone': 'neutral',
             'deltaSeconds': 0,
             'label': 'Unknown',
-            'detail': 'No schedule window available',
+            'detail': 'No matching stop found',
+            'scheduledAt': None,
         }
 
-    duration_seconds = max(1, int((arrival_time - origin_time).total_seconds()))
-    if observed_time < origin_time:
-        expected_ratio = 0.0
-    elif observed_time > arrival_time:
-        expected_ratio = 1.0
-    else:
-        expected_ratio = max(0.0, min(1.0, (observed_time - origin_time).total_seconds() / duration_seconds))
+    normalized_route = normalize_tracking_key(route_id or '')
+    normalized_direction = normalize_gtfs_direction(str(direction or ''))
+    vehicle_identifiers = [normalize_tracking_key(str(value or '')) for value in [
+        vehicle.get('journeyRef'),
+        vehicle.get('vehicleJourneyRef'),
+        vehicle.get('blockRef'),
+        vehicle.get('journeyCode'),
+    ] if value]
 
-    actual_ratio = expected_ratio
-    path = route_points_from_stop_sequence(route_sequence.get('stops', []) if isinstance(route_sequence, dict) else [])
-    if len(path) >= 2:
-        longitude = float(vehicle.get('longitude') or 0.0)
-        latitude = float(vehicle.get('latitude') or 0.0)
-        projection = project_point_onto_path(longitude, latitude, path)
-        if projection is not None:
-            cumulative = cumulative_path_distances(path)
-            total_distance = cumulative[-1] if cumulative else 0.0
-            if total_distance > 0.0:
-                actual_ratio = max(0.0, min(1.0, projection['along'] / total_distance))
+    schedule_matches: list[tuple[str, dict[str, object], dict[str, object]]] = []
+    for trip_id, payload in trip_schedules.items():
+        if not isinstance(payload, dict):
+            continue
+        trip_payload = payload.get('stops', []) if isinstance(payload.get('stops'), list) else []
+        if not trip_payload:
+            continue
+        payload_route = normalize_tracking_key(str(payload.get('routeId') or ''))
+        payload_direction = normalize_gtfs_direction(str(payload.get('direction') or ''))
+        if normalized_route and payload_route and normalized_route != payload_route:
+            continue
+        if normalized_direction and payload_direction and normalized_direction != 'unknown' and payload_direction != 'unknown' and normalized_direction != payload_direction:
+            continue
+        schedule_entry = None
+        for stop_entry in trip_payload:
+            if not isinstance(stop_entry, dict):
+                continue
+            if normalize_tracking_key(str(stop_entry.get('stopId') or '')) == normalize_tracking_key(stop_id):
+                schedule_entry = stop_entry
+                break
+        if schedule_entry is None:
+            continue
+        if normalize_tracking_key(str(trip_id)) in vehicle_identifiers:
+            schedule_matches.insert(0, (str(trip_id), payload, schedule_entry))
+        else:
+            schedule_matches.append((str(trip_id), payload, schedule_entry))
 
-    delta_seconds = int(round((expected_ratio - actual_ratio) * duration_seconds))
+    if not schedule_matches:
+        return {
+            'status': 'unknown',
+            'tone': 'neutral',
+            'deltaSeconds': 0,
+            'label': 'Unknown',
+            'detail': 'No matching timetable found',
+            'scheduledAt': None,
+        }
 
+    trip_id, payload, schedule_entry = schedule_matches[0]
+    base_time = parse_tracking_datetime(vehicle.get('originAimedDepartureTime')) or observed_time
+    first_stop = None
+    if isinstance(payload.get('stops'), list) and payload['stops']:
+        first_stop = next((entry for entry in payload['stops'] if isinstance(entry, dict)), None)
+    first_stop_time = first_stop.get('departureTime') or first_stop.get('arrivalTime') if first_stop else None
+    scheduled_at = build_scheduled_stop_datetime(base_time, schedule_entry.get('departureTime') or schedule_entry.get('arrivalTime'), first_stop_time)
+    if scheduled_at is None:
+        return {
+            'status': 'unknown',
+            'tone': 'neutral',
+            'deltaSeconds': 0,
+            'label': 'Unknown',
+            'detail': 'No scheduled time available',
+            'scheduledAt': None,
+        }
+
+    delta_seconds = int((observed_time - scheduled_at).total_seconds())
     if delta_seconds < 0:
-        status = 'early'
         tone = 'red'
-        label = format_punctuality_delta(delta_seconds)
+        status = 'early'
     elif delta_seconds <= 299:
-        status = 'on-time'
         tone = 'green'
-        label = 'On time'
+        status = 'on-time'
     else:
-        status = 'late'
         tone = 'yellow'
-        label = format_punctuality_delta(delta_seconds)
+        status = 'late'
 
     return {
         'status': status,
         'tone': tone,
         'deltaSeconds': delta_seconds,
-        'label': label,
-        'detail': label,
+        'label': format_punctuality_label(delta_seconds, scheduled_at),
+        'detail': str(schedule_entry.get('name') or 'Scheduled stop'),
+        'scheduledAt': scheduled_at,
     }
 
 
@@ -1244,6 +1326,7 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
     route_sequences = build_tracking_route_sequences(cache)
     all_stops = [stop for stop in (cache or {}).get('stops', []) if isinstance(stop, dict)]
     enriched: list[dict[str, object]] = []
+    trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
 
     for vehicle in vehicles:
         service = str(vehicle.get('service') or '').strip()
@@ -1281,7 +1364,10 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
         )
         punctuality = calculate_vehicle_punctuality(
             vehicle,
-            selected_sequence if isinstance(selected_sequence, dict) else None,
+            last_stop,
+            trip_schedules,
+            route_id=route_id or service,
+            direction=direction,
             reference_time=vehicle.get('recordedAt') or vehicle.get('sourceTimestamp') or vehicle.get('refreshedAt'),
         )
 
