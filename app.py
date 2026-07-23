@@ -1155,14 +1155,23 @@ def calculate_vehicle_punctuality(
             'scheduledAt': None,
         }
 
-    _, payload, schedule_entry = schedule_matches[0]
     base_time = parse_tracking_datetime(vehicle.get('originAimedDepartureTime')) or observed_time
-    first_stop = None
-    if isinstance(payload.get('stops'), list) and payload['stops']:
-        first_stop = next((entry for entry in payload['stops'] if isinstance(entry, dict)), None)
-    first_stop_time = first_stop.get('departureTime') or first_stop.get('arrivalTime') if first_stop else None
-    scheduled_at = build_scheduled_stop_datetime(base_time, schedule_entry.get('departureTime') or schedule_entry.get('arrivalTime'), first_stop_time)
-    if scheduled_at is None:
+    best_choice: tuple[dict[str, object], dict[str, object], datetime, int] | None = None
+    for _, payload, schedule_entry in schedule_matches:
+        first_stop = None
+        if isinstance(payload.get('stops'), list) and payload['stops']:
+            first_stop = next((entry for entry in payload['stops'] if isinstance(entry, dict)), None)
+        first_stop_time = first_stop.get('departureTime') or first_stop.get('arrivalTime') if first_stop else None
+        scheduled_at = build_scheduled_stop_datetime(base_time, schedule_entry.get('departureTime') or schedule_entry.get('arrivalTime'), first_stop_time)
+        if scheduled_at is None:
+            continue
+
+        delta_seconds = int((observed_time - scheduled_at).total_seconds())
+        candidate_key = abs(delta_seconds)
+        if best_choice is None or candidate_key < best_choice[3]:
+            best_choice = (payload, schedule_entry, scheduled_at, candidate_key)
+
+    if best_choice is None:
         return {
             'status': 'unknown',
             'tone': 'neutral',
@@ -1172,6 +1181,7 @@ def calculate_vehicle_punctuality(
             'scheduledAt': None,
         }
 
+    payload, schedule_entry, scheduled_at, _ = best_choice
     delta_seconds = int((observed_time - scheduled_at).total_seconds())
     if delta_seconds < 0:
         tone = 'red'
