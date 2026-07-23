@@ -1145,19 +1145,32 @@ def build_scheduled_stop_datetime(base_time: datetime | None, stop_time_value: o
         return None
 
     first_seconds = parse_gtfs_time(first_stop_time_value) if first_stop_time_value is not None else None
-    candidate_time = base_time
-    if first_seconds is not None and stop_seconds < first_seconds:
-        candidate_time = base_time + timedelta(days=1)
+    reference_time = base_time.astimezone(LONDON_TZ)
+    best_scheduled: datetime | None = None
+    best_distance: int | None = None
 
-    day_offset = stop_seconds // 86400
-    if day_offset:
-        candidate_time = candidate_time + timedelta(days=day_offset)
+    for day_offset in (-1, 0, 1):
+        candidate_date = reference_time.date() + timedelta(days=day_offset)
+        candidate_time = datetime(candidate_date.year, candidate_date.month, candidate_date.day, tzinfo=LONDON_TZ)
 
-    seconds_within_day = stop_seconds % 86400
-    hours, remainder = divmod(seconds_within_day, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    scheduled_date = candidate_time.date()
-    return datetime(scheduled_date.year, scheduled_date.month, scheduled_date.day, hours, minutes, seconds, tzinfo=LONDON_TZ).astimezone(timezone.utc)
+        if first_seconds is not None and stop_seconds < first_seconds and day_offset == 0:
+            candidate_time = candidate_time + timedelta(days=1)
+
+        day_offset_value = stop_seconds // 86400
+        if day_offset_value:
+            candidate_time = candidate_time + timedelta(days=day_offset_value)
+
+        seconds_within_day = stop_seconds % 86400
+        hours, remainder = divmod(seconds_within_day, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        scheduled_time = datetime(candidate_time.year, candidate_time.month, candidate_time.day, hours, minutes, seconds, tzinfo=LONDON_TZ).astimezone(timezone.utc)
+
+        distance = abs(int((base_time.astimezone(timezone.utc) - scheduled_time).total_seconds()))
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_scheduled = scheduled_time
+
+    return best_scheduled
 
 
 def calculate_vehicle_punctuality(
