@@ -174,7 +174,26 @@ function initializeMap() {
   const selectedLastStop = document.querySelector('#tracking-selected-last-stop');
   const selectedUpdated = document.querySelector('#tracking-selected-updated');
   const boltonCenter = [-2.428219, 53.576864];
-  if (!mapContainer || typeof mapboxgl === 'undefined') {
+  const hasMapboxToken = Boolean(window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE');
+  if (!mapContainer) {
+    return;
+  }
+
+  if (!hasMapboxToken || typeof mapboxgl === 'undefined') {
+    mapContainer.innerHTML = `
+      <div class="placeholder-card map-fallback-card">
+        <p>Mapbox token is not configured yet. Showing a public OpenStreetMap fallback view instead.</p>
+        <iframe
+          class="map-fallback-iframe"
+          src="https://www.openstreetmap.org/export/embed.html?bbox=-2.95%2C53.3%2C-1.9%2C53.9&layer=mapnik&marker=53.576864%2C-2.428219"
+          title="OpenStreetMap fallback"
+          loading="lazy"
+        ></iframe>
+      </div>
+    `;
+    if (mapStatus) {
+      setMessage(mapStatus, 'Showing an OpenStreetMap fallback view while the tracking map is waiting for a Mapbox token.', 'success');
+    }
     return;
   }
 
