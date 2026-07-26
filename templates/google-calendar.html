@@ -3,14 +3,16 @@
 {% block title %}Google Calendar{% endblock %}
 
 {% block content %}
-  <section class="content-panel fullwidth">
-    <div class="panel-head">
-      <p class="brand-subtitle">Planned diversions</p>
+  <div class="calendar-fullpage">
+    <div class="calendar-toolbar">
+      <div class="calendar-toolbar-links">
+        <a class="btn secondary compact" href="{{ url_for('daily_overview') }}">Back to Daily Overview</a>
+        <a class="btn secondary compact" href="{{ url_for('google_calendar_page') }}">Refresh Calendar</a>
+      </div>
       <h1>Google Calendar</h1>
     </div>
-    <p class="section-copy">This page opens the planned diversions calendar in a dedicated view so it has room to load properly.</p>
 
-    <div class="calendar-page-shell">
+    <div class="calendar-view-shell">
       <iframe
         class="calendar-page-frame"
         src="https://calendar.google.com/calendar/embed?height=1600&wkst=1&ctz=Europe%2FLondon&showPrint=0&mode=AGENDA&hl=en_GB&src=YTYwMzdhZmE1M2YwYmJjNjJiNGU4ZmY0ZWNhZTAzNmNhM2ZjYjZlMzk1ZjVhMjk4OGQ0YjdkMjhhZGZlMjdjOEBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=YWQxMmIyNGRhYzRkMjUyZDZmYTNlNGRjYjc4YTU3ODA2NTVhNjYwNWYzOWZmN2VkNWJjNWM0NDVkZjU1MTM2ZkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=YjI0YjU1NWE1YTA4MGQxNzFmMzA4N2IxY2RhOTNmYWY0YjFlNjJkMmE2ZWMwYzM5OTU1YjdhZDllZTc3ODE0NkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=MzM0MWU3MDBiYmVhMzAxMzU4NTU5MzU5MWIyOGEyMmZjNjU1NjFlNGY5OGRjMjFjMjZiYTYwZTYyNWY1MGY5MUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=NjllNzJkZTVlYzFkMzYwOTZiZGRkMzFmNWE4ODdhYWY2ZmU2ZTVhNTFjZmVkN2RhOWZhZjhhZjYxZDc4ZDk2YkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=NzA1Yjc0NTZjZmQ4ODQ2YTEwZmEwYWI1Mzk4NDk2NjdmZjgxMDUwZTVmYmQxM2ZjN2E1YTM0ZmFkY2UzODNkMUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=ZTkzZGVhY2JiMjEwOTJkOGI3YjgyNjM3NTQ0YzJjZWQ2ODk5YmIzZjYzNmQzMzgwZGQ0YmUwM2M0M2ZlMzllNEBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=MmI1NzRmMmU2NTQxNmUxMGRmMThmOTg0NDgxYWY4MDU1OTE4ZTkxZjg1MTdiNmY3ODVmNTBiZWIxMTRmYTllYUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=MjAzOWJjNTQ3ZDU5Yjg2M2Q0Y2NiYmRiM2Q5MjY3ZWJhMjhiMmZkNTE0MGJhNWE1NTJkZWMyNjkyYjhkYTdlM0Bncm91cC5jYWxlbmRhci5nb29nbGUuY29t&color=%23d50000&color=%23ad1457&color=%23ad1457&color=%23e67c73&color=%23e67c73&color=%23f4511e&color=%230b8043&color=%23e4c441&color=%238e24aa"
@@ -19,8 +21,5 @@
         allowfullscreen
       ></iframe>
     </div>
-
-    <p class="section-copy">If Google blocks the embedded view in your browser, use the direct calendar link below.</p>
-    <a class="btn secondary compact" href="https://calendar.google.com/calendar/embed?height=600&wkst=1&ctz=Europe%2FLondon&showPrint=0&mode=AGENDA&hl=en_GB&src=YTYwMzdhZmE1M2YwYmJjNjJiNGU4ZmY0ZWNhZTAzNmNhM2ZjYjZlMzk1ZjVhMjk4OGQ0YjdkMjhhZGZlMjdjOEBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=YWQxMmIyNGRhYzRkMjUyZDZmYTNlNGRjYjc4YTU3ODA2NTVhNjYwNWYzOWZmN2VkNWJjNWM0NDVkZjU1MTM2ZkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=YjI0YjU1NWE1YTA4MGQxNzFmMzA4N2IxY2RhOTNmYWY0YjFlNjJkMmE2ZWMwYzM5OTU1YjdhZDllZTc3ODE0NkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=MzM0MWU3MDBiYmVhMzAxMzU4NTU5MzU5MWIyOGEyMmZjNjU1NjFlNGY5OGRjMjFjMjZiYTYwZTYyNWY1MGY5MUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=NjllNzJkZTVlYzFkMzYwOTZiZGRkMzFmNWE4ODdhYWY2ZmU2ZTVhNTFjZmVkN2RhOWZhZjhhZjYxZDc4ZDk2YkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=NzA1Yjc0NTZjZmQ4ODQ2YTEwZmEwYWI1Mzk4NDk2NjdmZjgxMDUwZTVmYmQxM2ZjN2E1YTM0ZmFkY2UzODNkMUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=ZTkzZGVhY2JiMjEwOTJkOGI3YjgyNjM3NTQ0YzJjZWQ2ODk5YmIzZjYzNmQzMzgwZGQ0YmUwM2M0M2ZlMzllNEBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=MmI1NzRmMmU2NTQxNmUxMGRmMThmOTg0NDgxYWY4MDU1OTE4ZTkxZjg1MTdiNmY3ODVmNTBiZWIxMTRmYTllYUBncm91cC5jYWxlbmRhci5nb29nbGUuY29t&src=MjAzOWJjNTQ3ZDU5Yjg2M2Q0Y2NiYmRiM2Q5MjY3ZWJhMjhiMmZkNTE0MGJhNWE1NTJkZWMyNjkyYjhkYTdlM0Bncm91cC5jYWxlbmRhci5nb29nbGUuY29t&color=%23d50000&color=%23ad1457&color=%23ad1457&color=%23e67c73&color=%23e67c73&color=%23f4511e&color=%230b8043&color=%23e4c441&color=%238e24aa">Open calendar directly</a>
-  </section>
+  </div>
 {% endblock %}
