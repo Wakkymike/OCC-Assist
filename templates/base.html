@@ -41,6 +41,7 @@
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.live_updates %}
             <a href="{{ url_for('daily_overview') }}">Daily Overview</a>
           {% endif %}
+          <a href="{{ url_for('google_calendar_page') }}">Calendar</a>
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
             <a href="{{ url_for('service_overview') }}">Service Overview</a>
