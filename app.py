@@ -455,6 +455,12 @@ def daily_overview():
     return render_template('daily-overview.html')
 
 
+@app.get('/google-calendar')
+@login_required('live_updates')
+def google_calendar_page():
+    return render_template('google-calendar.html')
+
+
 @app.get('/live-updates')
 def live_updates_legacy_redirect():
     return redirect(url_for('daily_overview'))
