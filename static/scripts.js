@@ -175,14 +175,48 @@ function initializeMap() {
   const selectedUpdated = document.querySelector('#tracking-selected-updated');
   const boltonCenter = [-2.428219, 53.576864];
   const hasMapboxToken = Boolean(window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE');
+  let map = null;
+  let mapAvailable = false;
+  const canRenderMapOverlays = () => Boolean(map && typeof map.isStyleLoaded === 'function' && map.isStyleLoaded());
   if (!mapContainer) {
     return;
   }
 
+  const syncMapContainerSize = () => {
+    const mapShell = document.querySelector('.map-shell-tracking');
+    if (!mapContainer || !mapShell) {
+      return;
+    }
+    const shellHeight = mapShell.clientHeight > 0 ? mapShell.clientHeight : 320;
+    mapContainer.style.position = 'relative';
+    mapContainer.style.width = '100%';
+    mapContainer.style.height = `${shellHeight}px`;
+    mapContainer.style.minHeight = `${shellHeight}px`;
+  };
+
+  const resizeMap = () => {
+    if (!mapAvailable || !map) {
+      return;
+    }
+    syncMapContainerSize();
+    map.resize();
+  };
+
+  const initializeOverlays = () => {
+    loadTrackingStops();
+    startVehicleRefresh();
+    loadStaticRoutes();
+    window.requestAnimationFrame(() => {
+      resizeMap();
+      window.requestAnimationFrame(resizeMap);
+    });
+    window.setTimeout(resizeMap, 250);
+  };
+
   if (!hasMapboxToken || typeof mapboxgl === 'undefined') {
     mapContainer.innerHTML = `
       <div class="placeholder-card map-fallback-card">
-        <p>Mapbox token is not configured yet. Showing a public OpenStreetMap fallback view instead.</p>
+        <p>Mapbox is not available right now, so the tracking page is showing the public OpenStreetMap fallback view while the live service data continues loading.</p>
         <iframe
           class="map-fallback-iframe"
           src="https://www.openstreetmap.org/export/embed.html?bbox=-2.95%2C53.3%2C-1.9%2C53.9&layer=mapnik&marker=53.576864%2C-2.428219"
@@ -192,7 +226,49 @@ function initializeMap() {
       </div>
     `;
     if (mapStatus) {
-      setMessage(mapStatus, 'Showing an OpenStreetMap fallback view while the tracking map is waiting for a Mapbox token.', 'success');
+      setMessage(mapStatus, 'Showing the fallback map while live tracking data is being refreshed.', 'success');
+    }
+    if (trackingApp) {
+      document.body.classList.add('tracking-active');
+    }
+    if (routeSelect) routeSelect.disabled = true;
+    if (directionSelect) directionSelect.disabled = true;
+    if (routeStatus) routeStatus.textContent = 'Mapbox is unavailable. Live data is still loading in the sidebar and service overview.';
+    if (sidebarEmpty) sidebarEmpty.textContent = 'Select a bus marker to inspect its service details.';
+    if (window.OCC_ASSIST?.trackingVehiclesUrl) {
+      fetch(window.OCC_ASSIST.trackingVehiclesUrl, { cache: 'no-store' })
+        .then((response) => response.json())
+        .then((payload) => {
+          const vehicles = Array.isArray(payload?.vehicles) ? payload.vehicles : [];
+          if (vehicles.length && selectedService && selectedRoute && selectedFleet && selectedDirection && selectedDirectionLabel && selectedDestination && selectedBoard && selectedJourney && selectedPunctuality && selectedOriginDeparture && selectedLastStop && selectedUpdated) {
+            const firstVehicle = vehicles[0];
+            const fleetDisplay = String(firstVehicle?.fleetNumber || 'Unknown').trim() || 'Unknown';
+            selectedService.textContent = fleetDisplay;
+            selectedRoute.textContent = String(firstVehicle?.service || 'Unknown').trim() || 'Unknown';
+            selectedFleet.textContent = fleetDisplay;
+            selectedDirection.textContent = formatVehicleDirection(firstVehicle?.direction);
+            selectedDirectionLabel.textContent = formatVehicleDirection(firstVehicle?.direction);
+            selectedDestination.textContent = String(firstVehicle?.destination || 'Unknown').trim() || 'Unknown';
+            selectedBoard.textContent = formatBoardNumber(firstVehicle);
+            selectedJourney.textContent = formatJourneyNumber(firstVehicle);
+            selectedPunctuality.textContent = firstVehicle?.punctuality?.label || 'Unknown';
+            selectedPunctuality.className = `sidebar-pill punctuality-pill ${firstVehicle?.punctuality?.tone || 'neutral'}`;
+            selectedOriginDeparture.textContent = formatJourneyOriginDeparture(firstVehicle);
+            selectedLastStop.textContent = formatLastStop(firstVehicle?.lastStopPassed);
+            selectedUpdated.textContent = `Updated ${formatFeedTime(firstVehicle?.recordedAt || firstVehicle?.sourceTimestamp || firstVehicle?.refreshedAt)}`;
+            if (sidebarEmpty) sidebarEmpty.hidden = true;
+            if (sidebarPanel) sidebarPanel.hidden = false;
+          }
+          if (mapStatus) {
+            const updated = formatFeedTime(payload?.sourceTimestamp || payload?.refreshedAt);
+            setMessage(mapStatus, `${vehicles.length} live vehicle${vehicles.length === 1 ? '' : 's'} updated ${updated}.`, 'success');
+          }
+        })
+        .catch(() => {
+          if (mapStatus) {
+            setMessage(mapStatus, 'Unable to refresh live vehicle data.', 'error');
+          }
+        });
     }
     return;
   }
@@ -203,35 +279,20 @@ function initializeMap() {
 
   if (window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE') {
     mapboxgl.accessToken = window.MAPBOX_TOKEN;
-    const mapContainer = document.getElementById('map');
-    const mapShell = document.querySelector('.map-shell-tracking');
-    const syncMapContainerSize = () => {
-      if (!mapContainer || !mapShell) {
-        return;
-      }
-      const shellHeight = mapShell.clientHeight > 0 ? mapShell.clientHeight : 320;
-      mapContainer.style.position = 'relative';
-      mapContainer.style.width = '100%';
-      mapContainer.style.height = `${shellHeight}px`;
-      mapContainer.style.minHeight = `${shellHeight}px`;
-    };
     syncMapContainerSize();
 
-    const map = new mapboxgl.Map({
+    map = new mapboxgl.Map({
       container: 'map',
       style: 'mapbox://styles/mapbox/streets-v12',
       center: boltonCenter,
       zoom: 10.6,
     });
+    mapAvailable = true;
 
     const vehicleStates = new Map();
     const vehicleDataById = new Map();
     let selectedVehicleId = null;
     let selectedVehicleFleet = null;
-    const resizeMap = () => {
-      syncMapContainerSize();
-      map.resize();
-    };
     let refreshIntervalId = null;
     let stopFeatureCollection = { type: 'FeatureCollection', features: [] };
     let stopFeaturesLoaded = false;
@@ -433,7 +494,7 @@ function initializeMap() {
     };
 
     const applyRouteOverlay = (featureCollection, showOverlay) => {
-      if (!map.isStyleLoaded()) return;
+      if (!canRenderMapOverlays()) return;
       ensureRouteOverlayLayers();
       const source = map.getSource(routeSourceId);
       if (!source) return;
@@ -444,7 +505,7 @@ function initializeMap() {
     };
 
     const applyStopOverlay = (featureCollection, showOverlay) => {
-      if (!map.isStyleLoaded()) return;
+      if (!canRenderMapOverlays()) return;
       ensureStopOverlayLayers();
       const source = map.getSource(stopSourceId);
       if (!source) return;
@@ -582,17 +643,6 @@ function initializeMap() {
       setMessage(mapStatus, 'Loading vehicle positions...', 'success');
       refreshVehicles();
       refreshIntervalId = window.setInterval(refreshVehicles, 7000);
-    };
-
-    const initializeOverlays = () => {
-      loadTrackingStops();
-      startVehicleRefresh();
-      loadStaticRoutes();
-      window.requestAnimationFrame(() => {
-        resizeMap();
-        window.requestAnimationFrame(resizeMap);
-      });
-      window.setTimeout(resizeMap, 250);
     };
 
     if (map.loaded()) {
