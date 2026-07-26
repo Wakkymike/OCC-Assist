@@ -58,6 +58,24 @@
         <div id="upcoming-message" class="message" hidden></div>
         <div id="upcoming-list" class="upcoming-list" hidden></div>
       </section>
+
+      <section class="overview-upcoming" aria-label="Service status updates">
+        <div class="section-row">
+          <h2>Service Status Updates</h2>
+          <a class="btn secondary compact" href="{{ url_for('service_overview') }}">Open Service Overview</a>
+        </div>
+        <p class="section-copy">Live service status and route activity can be reviewed from the service overview page.</p>
+      </section>
+
+      {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.user_management %}
+      <section class="overview-upcoming" aria-label="Admin access">
+        <div class="section-row">
+          <h2>Admin</h2>
+          <a class="btn secondary compact" href="{{ url_for('users_page') }}">Open User Management</a>
+        </div>
+        <p class="section-copy">Manage user access, permissions, and system administration settings from here.</p>
+      </section>
+      {% endif %}
     </section>
   </section>
 {% endblock %}
