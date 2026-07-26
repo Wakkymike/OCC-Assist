@@ -456,7 +456,6 @@ def daily_overview():
 
 
 @app.get('/google-calendar')
-@login_required('live_updates')
 def google_calendar_page():
     return render_template('google-calendar.html')
 
