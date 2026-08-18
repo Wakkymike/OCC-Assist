@@ -1120,6 +1120,11 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
         recorded_at = get_xml_text(activity, 'siri:RecordedAtTime')
         origin_departure = get_xml_text(journey, 'siri:OriginAimedDepartureTime')
         destination_arrival = get_xml_text(journey, 'siri:DestinationAimedArrivalTime')
+        monitored_call = journey.find('siri:MonitoredCall', SIRI_NAMESPACE)
+        stop_point_ref = get_xml_text(monitored_call, 'siri:StopPointRef') if monitored_call is not None else ''
+        expected_arrival = get_xml_text(monitored_call, 'siri:ExpectedArrivalTime') if monitored_call is not None else ''
+        aimed_arrival = get_xml_text(monitored_call, 'siri:AimedArrivalTime') if monitored_call is not None else ''
+        actual_arrival = get_xml_text(monitored_call, 'siri:ActualArrivalTime') if monitored_call is not None else ''
         journey_ref = get_xml_text(journey, 'siri:FramedVehicleJourneyRef/siri:DatedVehicleJourneyRef')
         vehicle_journey_ref = get_xml_text(journey, 'siri:FramedVehicleJourneyRef/siri:VehicleJourneyRef')
         block_ref = get_xml_text(journey, 'siri:BlockRef')
@@ -1150,6 +1155,11 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
                 'recordedAt': recorded_at,
                 'originAimedDepartureTime': origin_departure,
                 'destinationAimedArrivalTime': destination_arrival,
+                'stopPointRef': stop_point_ref,
+                'naptan': stop_point_ref,
+                'expectedArrivalTime': expected_arrival,
+                'aimedArrivalTime': aimed_arrival,
+                'actualArrivalTime': actual_arrival,
                 'journeyRef': journey_ref,
                 'vehicleJourneyRef': vehicle_journey_ref,
                 'blockRef': block_ref,
@@ -1281,7 +1291,7 @@ def collect_stop_match_keys(stop: dict[str, object] | None) -> set[str]:
     if not isinstance(stop, dict):
         return keys
 
-    for field in ('stopId', 'id', 'stopPointRef', 'stopRef', 'name', 'stopName'):
+    for field in ('naptan', 'atcoCode', 'stopPointRef', 'stopRef', 'stopId', 'id', 'stop_id', 'stop_code', 'atco_code', 'name', 'stopName'):
         value = str(stop.get(field) or '').strip()
         if not value:
             continue
@@ -1657,6 +1667,75 @@ def build_tracking_route_sequences(cache: dict[str, object] | None) -> dict[str,
     return route_sequences if isinstance(route_sequences, dict) else {}
 
 
+def build_stop_next_arrivals(
+    stop: dict[str, object] | None,
+    trip_schedules: dict[str, object],
+    reference_time: object | None = None,
+    max_results: int = 5,
+) -> list[dict[str, object]]:
+    if not isinstance(stop, dict) or not isinstance(trip_schedules, dict):
+        return []
+
+    reference_now = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
+    stop_match_keys = collect_stop_match_keys(stop)
+    if not stop_match_keys:
+        return []
+
+    arrivals: list[dict[str, object]] = []
+    for trip_id, payload in trip_schedules.items():
+        if not isinstance(payload, dict):
+            continue
+        schedule_stops = payload.get('stops', []) if isinstance(payload.get('stops'), list) else []
+        if not schedule_stops:
+            continue
+
+        first_stop = next((entry for entry in schedule_stops if isinstance(entry, dict)), None)
+        first_stop_time = get_schedule_time_value(first_stop) if first_stop else ''
+        for schedule_entry in schedule_stops:
+            if not isinstance(schedule_entry, dict):
+                continue
+            if not stop_matches_schedule_entry(stop, schedule_entry):
+                continue
+            arrival_time = get_schedule_time_value(schedule_entry)
+            if not arrival_time:
+                continue
+            scheduled_at = build_scheduled_stop_datetime(reference_now, arrival_time, first_stop_time)
+            if scheduled_at is None:
+                continue
+            if scheduled_at < reference_now - timedelta(minutes=5):
+                continue
+
+            countdown_seconds = max(0, int((scheduled_at - reference_now).total_seconds()))
+            arrivals.append(
+                {
+                    'tripId': str(trip_id),
+                    'routeId': str(payload.get('routeId') or '').strip() or None,
+                    'serviceId': str(payload.get('serviceId') or '').strip() or None,
+                    'direction': normalize_gtfs_direction(str(payload.get('direction') or '')),
+                    'scheduledAt': scheduled_at.isoformat(),
+                    'countdownSeconds': countdown_seconds,
+                    'countdownLabel': format_countdown_label(countdown_seconds),
+                    'stopName': str(schedule_entry.get('name') or stop.get('name') or '').strip() or None,
+                }
+            )
+            break
+
+    arrivals.sort(key=lambda item: item.get('scheduledAt') or '')
+    return arrivals[:max_results]
+
+
+def format_countdown_label(total_seconds: int) -> str:
+    total_seconds = max(0, int(total_seconds))
+    if total_seconds <= 0:
+        return 'Due now'
+    if total_seconds < 60:
+        return f'{total_seconds}s'
+    minutes, seconds = divmod(total_seconds, 60)
+    if seconds == 0:
+        return f'{minutes}m'
+    return f'{minutes}m {seconds}s'
+
+
 def select_last_stop_passed(vehicle: dict[str, object], route_sequence: dict[str, object] | None) -> dict[str, object] | None:
     if not route_sequence:
         return None
@@ -1811,8 +1890,18 @@ def group_active_services(vehicles: list[dict[str, object]]) -> list[dict[str, o
 
 
 def serialize_tracking_stop(stop: dict[str, object]) -> dict[str, object]:
+    naptan = str(
+        stop.get('naptan')
+        or stop.get('atcoCode')
+        or stop.get('stopPointRef')
+        or stop.get('stopRef')
+        or stop.get('stopId')
+        or stop.get('id')
+        or ''
+    ).strip()
     return {
         'id': str(stop.get('stopId') or stop.get('id') or '').strip(),
+        'naptan': naptan or None,
         'name': str(stop.get('name') or stop.get('stopName') or 'Unknown stop').strip(),
         'latitude': float(stop.get('latitude', 0.0)),
         'longitude': float(stop.get('longitude', 0.0)),
@@ -1873,8 +1962,11 @@ def load_gtfs_stops_from_directory(extracted_dir: Path) -> list[dict[str, object
             latitude = float(lat_text)
         except ValueError:
             continue
+        naptan_code = str(row.get('stop_code') or row.get('atco_code') or stop_id).strip()
         stops_lookup[stop_id] = {
             'stopId': stop_id,
+            'naptan': naptan_code,
+            'atcoCode': naptan_code,
             'name': stop_name or stop_id,
             'longitude': longitude,
             'latitude': latitude,
@@ -2029,6 +2121,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             for row in stop_rows:
                 stop_id = str(row.get('stop_id') or '').strip()
                 stop_name = str(row.get('stop_name') or '').strip()
+                stop_code = str(row.get('stop_code') or row.get('atco_code') or '').strip()
                 lon_text = str(row.get('stop_lon') or '').strip()
                 lat_text = str(row.get('stop_lat') or '').strip()
                 if not stop_id or not lon_text or not lat_text:
@@ -2038,8 +2131,11 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                     latitude = float(lat_text)
                 except ValueError:
                     continue
+                naptan_code = stop_code or stop_id
                 stops_lookup[stop_id] = {
                     'stopId': stop_id,
+                    'naptan': naptan_code,
+                    'atcoCode': stop_code or naptan_code,
                     'name': stop_name or stop_id,
                     'longitude': longitude,
                     'latitude': latitude,
@@ -2080,6 +2176,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                         stop_sequence.append(
                             {
                                 'stopId': stop_id,
+                                'naptan': str(stop_data.get('naptan') or stop_data.get('atcoCode') or stop_id),
                                 'name': stop_data['name'],
                                 'longitude': longitude,
                                 'latitude': latitude,
@@ -2097,6 +2194,7 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
                     schedule_stops.append(
                         {
                             'stopId': stop_id,
+                            'naptan': str(stop_data.get('naptan') or stop_data.get('atcoCode') or stop_id),
                             'name': stop_data['name'],
                             'arrivalTime': arrival_time,
                             'departureTime': departure_time,
@@ -2468,7 +2566,8 @@ def tracking_stops():
             }
         )
 
-    stops = [serialize_tracking_stop(stop) for stop in cache.get('stops', []) if isinstance(stop, dict)]
+    trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
+    stops = [serialize_tracking_stop(stop, trip_schedules, datetime.now(timezone.utc)) for stop in cache.get('stops', []) if isinstance(stop, dict)]
     return jsonify(
         {
             'ok': True,

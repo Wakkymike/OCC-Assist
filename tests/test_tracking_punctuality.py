@@ -4,6 +4,27 @@ import app as app_module
 from app import calculate_vehicle_punctuality, fetch_bods_vehicles, select_nearest_route_stop, service_is_active
 
 
+def test_serialize_tracking_stop_includes_naptan_code_and_next_arrivals():
+    stop = {'stopId': '0100B123', 'name': 'Market Street', 'latitude': 53.4, 'longitude': -2.3}
+    trip_schedules = {
+        'trip-1': {
+            'routeId': 'BNGN',
+            'direction': 'outbound',
+            'serviceId': 'bngn',
+            'stops': [
+                {'stopId': '0100B123', 'name': 'Market Street', 'arrivalTime': '12:05:00', 'departureTime': '12:05:00'},
+            ],
+        }
+    }
+
+    payload = app_module.serialize_tracking_stop(stop, trip_schedules, datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc))
+
+    assert payload['naptan'] == '0100B123'
+    assert payload['stopCode'] == '0100B123'
+    assert payload['nextArrivals'][0]['routeId'] == 'BNGN'
+    assert payload['nextArrivals'][0]['countdownSeconds'] == 300
+
+
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
     vehicle = {
         'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
@@ -112,6 +133,51 @@ def test_vehicle_punctuality_handles_gtfs_times_after_midnight():
 
     assert punctuality['status'] == 'on-time'
     assert punctuality['deltaSeconds'] == 0
+
+
+def test_vehicle_punctuality_uses_naptan_when_available():
+    vehicle = {
+        'recordedAt': '2024-01-01T12:20:00+00:00',
+        'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
+        'naptan': '350013456',
+    }
+    last_stop = {'naptan': '350013456', 'name': 'Northbound stop'}
+    trip_schedules = {
+        'trip-1': {
+            'routeId': 'route-1',
+            'direction': 'outbound',
+            'stops': [
+                {'stopId': 'stop-1', 'naptan': '350013456', 'name': 'Northbound stop', 'arrivalTime': '12:15:00', 'departureTime': '12:15:00'},
+            ],
+        }
+    }
+
+    punctuality = calculate_vehicle_punctuality(
+        vehicle,
+        last_stop,
+        trip_schedules,
+        route_id='route-1',
+        direction='outbound',
+        reference_time='2024-01-01T12:20:00+00:00',
+    )
+
+    assert punctuality['status'] == 'late'
+    assert punctuality['deltaSeconds'] == 300
+
+
+def test_serialize_tracking_stop_includes_naptan_code():
+    stop = {
+        'stopId': 'stop-1',
+        'naptan': '350013456',
+        'name': 'Northbound stop',
+        'latitude': 53.57,
+        'longitude': -2.43,
+    }
+
+    serialized = app_module.serialize_tracking_stop(stop)
+
+    assert serialized['id'] == 'stop-1'
+    assert serialized['naptan'] == '350013456'
 
 
 def test_vehicle_punctuality_prefers_the_matching_stop_in_the_route_position():

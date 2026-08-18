@@ -529,7 +529,18 @@ function initializeMap() {
         const payload = await response.json();
         if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load stop data.');
         const stops = payload.stops || [];
-        stopFeatureCollection = { type: 'FeatureCollection', features: stops.map((stop) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [stop.longitude, stop.latitude] }, properties: { stopId: stop.id, name: stop.name } })) };
+        stopFeatureCollection = {
+          type: 'FeatureCollection',
+          features: stops.map((stop) => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [stop.longitude, stop.latitude] },
+            properties: {
+              stopId: stop.id,
+              naptan: stop.naptan || stop.id,
+              name: stop.name,
+            },
+          })),
+        };
         stopFeaturesLoaded = true;
         if (stopToggle) stopToggle.disabled = false;
         applyStopOverlay(stopFeatureCollection, Boolean(stopToggle?.checked));
