@@ -2599,6 +2599,33 @@ def tracking_stops():
     )
 
 
+@app.get('/api/tracking/stops/<stop_id>')
+@login_required('tracking')
+def tracking_stop_details(stop_id: str):
+    cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
+    if cache is None:
+        return jsonify({'ok': False, 'message': 'No GTFS stops are available yet.'}), 404
+
+    stop = next(
+        (
+            item
+            for item in cache.get('stops', [])
+            if isinstance(item, dict) and str(item.get('stopId') or item.get('id') or '').strip() == stop_id
+        ),
+        None,
+    )
+    if stop is None:
+        return jsonify({'ok': False, 'message': 'Stop not found.'}), 404
+
+    trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
+    return jsonify(
+        {
+            'ok': True,
+            'stop': serialize_tracking_stop(stop, trip_schedules, datetime.now(timezone.utc)),
+        }
+    )
+
+
 @app.get('/driving-hours')
 @login_required('driving_hours')
 def driving_hours():

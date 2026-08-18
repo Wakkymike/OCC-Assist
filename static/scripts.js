@@ -307,6 +307,8 @@ function initializeMap() {
     const stopSourceId = 'gnw-stop-overlay-source';
     const stopLayerId = 'gnw-stop-overlay';
     const stopHitLayerId = 'gnw-stop-overlay-hit-area';
+    let stopInteractionsBound = false;
+    let lastStopClickAt = 0;
     const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
 
@@ -528,10 +530,27 @@ function initializeMap() {
     };
 
     const ensureStopOverlayLayers = () => {
-      if (map.getSource(stopSourceId)) return;
-      map.addSource(stopSourceId, { type: 'geojson', data: emptyStopFeatureCollection });
-      map.addLayer({ id: stopHitLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-radius': 16, 'circle-color': '#ffffff', 'circle-opacity': 0.01 } });
-      map.addLayer({ id: stopLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-color': '#5fc1ff', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.4, 12, 3.8, 15, 5.2], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.55 } });
+      if (!map.getSource(stopSourceId)) {
+        map.addSource(stopSourceId, { type: 'geojson', data: emptyStopFeatureCollection });
+        map.addLayer({ id: stopHitLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-radius': 16, 'circle-color': '#ffffff', 'circle-opacity': 0.01 } });
+        map.addLayer({ id: stopLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-color': '#5fc1ff', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.4, 12, 3.8, 15, 5.2], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.55 } });
+      }
+      if (stopInteractionsBound) return;
+
+      map.on('click', stopHitLayerId, (event) => {
+        const feature = event.features?.[0];
+        if (feature) {
+          lastStopClickAt = Date.now();
+          selectStop(feature.properties || {});
+        }
+      });
+      map.on('mouseenter', stopHitLayerId, () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', stopHitLayerId, () => {
+        map.getCanvas().style.cursor = '';
+      });
+      stopInteractionsBound = true;
     };
 
     const applyRouteOverlay = (featureCollection, showOverlay) => {
@@ -610,6 +629,15 @@ function initializeMap() {
         nextArrivals: Array.isArray(stopProperties.nextArrivals) ? stopProperties.nextArrivals : [],
       };
       setSidebarStop(normalizedStop);
+      const stopId = String(normalizedStop.stopId || '').trim();
+      if (!stopId || !window.OCC_ASSIST.trackingStopsUrl) return;
+
+      fetch(`${window.OCC_ASSIST.trackingStopsUrl}/${encodeURIComponent(stopId)}`, { cache: 'no-store' })
+        .then((response) => response.json())
+        .then((payload) => {
+          if (payload?.ok && payload.stop) setSidebarStop(payload.stop);
+        })
+        .catch(() => {});
     };
 
     const renderVehicles = (vehicles, observedAtMs) => {
@@ -732,21 +760,9 @@ function initializeMap() {
 
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
-    map.on('click', (event) => {
-      const stopFeatures = map.getLayer(stopHitLayerId)
-        ? map.queryRenderedFeatures(event.point, { layers: [stopHitLayerId] })
-        : [];
-      if (stopFeatures.length) {
-        selectStop(stopFeatures[0].properties || {});
-        return;
-      }
+    map.on('click', () => {
+      if (Date.now() - lastStopClickAt < 100) return;
       selectVehicle(null);
-    });
-    map.on('mousemove', (event) => {
-      const stopFeatures = map.getLayer(stopHitLayerId)
-        ? map.queryRenderedFeatures(event.point, { layers: [stopHitLayerId] })
-        : [];
-      map.getCanvas().style.cursor = stopFeatures.length ? 'pointer' : '';
     });
 
     setRouteControlsEnabled(false);
