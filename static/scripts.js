@@ -382,7 +382,8 @@ function initializeMap() {
         const fleet = String(arrival?.fleetNumber || 'Unknown fleet').trim() || 'Unknown fleet';
         const direction = arrival?.direction ? ` ${formatVehicleDirection(arrival.direction)}` : '';
         const countdown = String(arrival?.countdownLabel || 'Due now').trim() || 'Due now';
-        return `<li><span class="stop-arrival-service">${escapeHtml(service)} ${escapeHtml(fleet)}${escapeHtml(direction)}</span><span class="stop-arrival-countdown">${escapeHtml(countdown)}</span></li>`;
+        const sourceLabel = arrival?.source === 'scheduled' ? ' (Scheduled)' : '';
+        return `<li><span class="stop-arrival-service">${escapeHtml(service)} ${escapeHtml(fleet)}${escapeHtml(direction)}</span><span class="stop-arrival-countdown">${escapeHtml(countdown)}${sourceLabel}</span></li>`;
       }).join('');
     };
 
