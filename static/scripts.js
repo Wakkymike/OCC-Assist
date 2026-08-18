@@ -306,6 +306,7 @@ function initializeMap() {
     const routeLayerId = 'gnw-route-overlay';
     const stopSourceId = 'gnw-stop-overlay-source';
     const stopLayerId = 'gnw-stop-overlay';
+    const stopHitLayerId = 'gnw-stop-overlay-hit-area';
     const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
 
@@ -529,6 +530,7 @@ function initializeMap() {
     const ensureStopOverlayLayers = () => {
       if (map.getSource(stopSourceId)) return;
       map.addSource(stopSourceId, { type: 'geojson', data: emptyStopFeatureCollection });
+      map.addLayer({ id: stopHitLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-radius': 16, 'circle-color': '#ffffff', 'circle-opacity': 0.01 } });
       map.addLayer({ id: stopLayerId, type: 'circle', source: stopSourceId, paint: { 'circle-color': '#5fc1ff', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.4, 12, 3.8, 15, 5.2], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1, 'circle-opacity': 0.55 } });
     };
 
@@ -550,6 +552,7 @@ function initializeMap() {
       if (!source) return;
       source.setData(showOverlay ? featureCollection : emptyStopFeatureCollection);
       const visibility = showOverlay ? 'visible' : 'none';
+      if (map.getLayer(stopHitLayerId)) map.setLayoutProperty(stopHitLayerId, 'visibility', visibility);
       if (map.getLayer(stopLayerId)) map.setLayoutProperty(stopLayerId, 'visibility', visibility);
     };
 
@@ -730,8 +733,8 @@ function initializeMap() {
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
     map.on('click', (event) => {
-      const stopFeatures = map.getLayer(stopLayerId)
-        ? map.queryRenderedFeatures(event.point, { layers: [stopLayerId] })
+      const stopFeatures = map.getLayer(stopHitLayerId)
+        ? map.queryRenderedFeatures(event.point, { layers: [stopHitLayerId] })
         : [];
       if (stopFeatures.length) {
         selectStop(stopFeatures[0].properties || {});
@@ -740,8 +743,8 @@ function initializeMap() {
       selectVehicle(null);
     });
     map.on('mousemove', (event) => {
-      const stopFeatures = map.getLayer(stopLayerId)
-        ? map.queryRenderedFeatures(event.point, { layers: [stopLayerId] })
+      const stopFeatures = map.getLayer(stopHitLayerId)
+        ? map.queryRenderedFeatures(event.point, { layers: [stopHitLayerId] })
         : [];
       map.getCanvas().style.cursor = stopFeatures.length ? 'pointer' : '';
     });
