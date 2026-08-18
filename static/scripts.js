@@ -609,21 +609,6 @@ function initializeMap() {
       setSidebarStop(normalizedStop);
     };
 
-    map.on('click', 'gnw-stop-overlay', (event) => {
-      const features = event.features || [];
-      if (!features.length) return;
-      const properties = features[0].properties || {};
-      selectStop(properties);
-    });
-
-    map.on('mouseenter', 'gnw-stop-overlay', () => {
-      map.getCanvas().style.cursor = 'pointer';
-    });
-
-    map.on('mouseleave', 'gnw-stop-overlay', () => {
-      map.getCanvas().style.cursor = '';
-    });
-
     const renderVehicles = (vehicles, observedAtMs) => {
       const activeIds = new Set();
       let visibleVehicleCount = 0;
@@ -745,12 +730,20 @@ function initializeMap() {
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
     map.on('click', (event) => {
-      const clickedStop = map.getLayer(stopLayerId)
-        && map.queryRenderedFeatures(event.point, { layers: [stopLayerId] }).length > 0;
-      if (clickedStop) {
+      const stopFeatures = map.getLayer(stopLayerId)
+        ? map.queryRenderedFeatures(event.point, { layers: [stopLayerId] })
+        : [];
+      if (stopFeatures.length) {
+        selectStop(stopFeatures[0].properties || {});
         return;
       }
       selectVehicle(null);
+    });
+    map.on('mousemove', (event) => {
+      const stopFeatures = map.getLayer(stopLayerId)
+        ? map.queryRenderedFeatures(event.point, { layers: [stopLayerId] })
+        : [];
+      map.getCanvas().style.cursor = stopFeatures.length ? 'pointer' : '';
     });
 
     setRouteControlsEnabled(false);
