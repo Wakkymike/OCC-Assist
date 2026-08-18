@@ -616,10 +616,12 @@ function initializeMap() {
       selectStop(properties);
     });
 
-    map.on('click', () => {
-      if (selectedStopPanel && !selectedStopPanel.hidden) {
-        selectedStopPanel.hidden = true;
-      }
+    map.on('mouseenter', 'gnw-stop-overlay', () => {
+      map.getCanvas().style.cursor = 'pointer';
+    });
+
+    map.on('mouseleave', 'gnw-stop-overlay', () => {
+      map.getCanvas().style.cursor = '';
     });
 
     const renderVehicles = (vehicles, observedAtMs) => {
@@ -742,7 +744,12 @@ function initializeMap() {
 
     applyZoomStyling();
     map.on('zoom', applyZoomStyling);
-    map.on('click', () => {
+    map.on('click', (event) => {
+      const clickedStop = map.getLayer(stopLayerId)
+        && map.queryRenderedFeatures(event.point, { layers: [stopLayerId] }).length > 0;
+      if (clickedStop) {
+        return;
+      }
       selectVehicle(null);
     });
 
