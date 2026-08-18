@@ -2584,14 +2584,11 @@ def tracking_stops():
             }
         )
 
-    trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
-    stops = []
-    for stop in cache.get('stops', []) if isinstance(cache.get('stops'), list) else []:
-        if not isinstance(stop, dict):
-            continue
-        stop_payload = dict(stop)
-        stop_payload['nextArrivals'] = build_stop_next_arrivals(stop_payload, trip_schedules, datetime.now(timezone.utc), max_results=5)
-        stops.append(serialize_tracking_stop(stop_payload))
+    stops = [
+        serialize_tracking_stop(stop)
+        for stop in cache.get('stops', [])
+        if isinstance(stop, dict)
+    ]
     return jsonify(
         {
             'ok': True,
