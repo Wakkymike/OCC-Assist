@@ -1737,10 +1737,11 @@ def format_countdown_label(total_seconds: int) -> str:
         return 'Due now'
     if total_seconds < 60:
         return f'{total_seconds}s'
-    minutes, seconds = divmod(total_seconds, 60)
-    if seconds == 0:
-        return f'{minutes}m'
-    return f'{minutes}m {seconds}s'
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    if hours:
+        return f'{hours}h {minutes}m'
+    return f'{minutes}m'
 
 
 def build_live_stop_arrivals(
@@ -2700,17 +2701,32 @@ def tracking_stop_details(stop_id: str):
     stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules)
     if not stop_payload['nextArrivals']:
         scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, datetime.now(timezone.utc))
-        stop_payload['nextArrivals'] = [
-            {
-                'service': arrival.get('routeId') or arrival.get('serviceId') or 'Unknown',
-                'fleetNumber': 'Scheduled',
-                'direction': arrival.get('direction'),
-                'countdownSeconds': arrival.get('countdownSeconds'),
-                'countdownLabel': arrival.get('countdownLabel'),
-                'source': 'scheduled',
-            }
-            for arrival in scheduled_arrivals
-        ]
+        route_labels = {
+            str(route.get('id') or '').strip(): str(route.get('label') or route.get('lineName') or route.get('id') or '').strip()
+            for route in cache.get('routes', [])
+            if isinstance(route, dict)
+        }
+        seen_services: set[tuple[str, str]] = set()
+        fallback_arrivals = []
+        for arrival in scheduled_arrivals:
+            route_id = str(arrival.get('routeId') or arrival.get('serviceId') or 'Unknown').strip()
+            direction = str(arrival.get('direction') or '').strip()
+            service = route_labels.get(route_id) or route_id
+            service_key = (normalize_tracking_key(service), direction)
+            if service_key in seen_services:
+                continue
+            seen_services.add(service_key)
+            fallback_arrivals.append(
+                {
+                    'service': service,
+                    'fleetNumber': 'No live fleet',
+                    'direction': direction or None,
+                    'countdownSeconds': arrival.get('countdownSeconds'),
+                    'countdownLabel': arrival.get('countdownLabel'),
+                    'source': 'scheduled',
+                }
+            )
+        stop_payload['nextArrivals'] = fallback_arrivals
     return jsonify(
         {
             'ok': True,
