@@ -59,7 +59,6 @@ app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
 app.config['BODS_STALE_SECONDS'] = int(os.environ.get('OCC_ASSIST_BODS_STALE_SECONDS', '120'))
 app.config['SESSION_INACTIVITY_SECONDS'] = int(os.environ.get('OCC_ASSIST_SESSION_INACTIVITY_SECONDS', '3600'))
-app.config['STATIC_VERSION'] = str(int(max((BASE_DIR / 'static' / 'scripts.js').stat().st_mtime, (BASE_DIR / 'static' / 'styles.css').stat().st_mtime)))
 
 
 SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
@@ -341,10 +340,18 @@ def login_required(permission_key: str | None = None):
 @app.context_processor
 def inject_user_context() -> dict[str, object]:
     user = get_current_user()
+    static_version = str(
+        int(
+            max(
+                (BASE_DIR / 'static' / 'scripts.js').stat().st_mtime,
+                (BASE_DIR / 'static' / 'styles.css').stat().st_mtime,
+            )
+        )
+    )
     return {
         'current_user': user,
         'mapbox_token': app.config['MAPBOX_TOKEN'],
-        'static_version': app.config['STATIC_VERSION'],
+        'static_version': static_version,
         'permissions_map': PERMISSIONS,
         'page_permissions': PAGE_PERMISSIONS,
         'tracking_stops_url': url_for('tracking_stops'),
