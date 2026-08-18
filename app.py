@@ -1889,9 +1889,14 @@ def group_active_services(vehicles: list[dict[str, object]]) -> list[dict[str, o
     return ordered_groups
 
 
-def serialize_tracking_stop(stop: dict[str, object]) -> dict[str, object]:
+def serialize_tracking_stop(
+    stop: dict[str, object],
+    trip_schedules: dict[str, object] | None = None,
+    reference_time: object | None = None,
+) -> dict[str, object]:
     naptan = str(
         stop.get('naptan')
+        or stop.get('stopCode')
         or stop.get('atcoCode')
         or stop.get('stopPointRef')
         or stop.get('stopRef')
@@ -1899,12 +1904,18 @@ def serialize_tracking_stop(stop: dict[str, object]) -> dict[str, object]:
         or stop.get('id')
         or ''
     ).strip()
+    next_arrivals = list(stop.get('nextArrivals') or [])
+    if not next_arrivals and isinstance(trip_schedules, dict):
+        next_arrivals = build_stop_next_arrivals(stop, trip_schedules, reference_time, max_results=5)
+
     return {
         'id': str(stop.get('stopId') or stop.get('id') or '').strip(),
         'naptan': naptan or None,
+        'stopCode': naptan or None,
         'name': str(stop.get('name') or stop.get('stopName') or 'Unknown stop').strip(),
         'latitude': float(stop.get('latitude', 0.0)),
         'longitude': float(stop.get('longitude', 0.0)),
+        'nextArrivals': next_arrivals,
     }
 
 
@@ -2567,7 +2578,13 @@ def tracking_stops():
         )
 
     trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
-    stops = [serialize_tracking_stop(stop, trip_schedules, datetime.now(timezone.utc)) for stop in cache.get('stops', []) if isinstance(stop, dict)]
+    stops = []
+    for stop in cache.get('stops', []) if isinstance(cache.get('stops'), list) else []:
+        if not isinstance(stop, dict):
+            continue
+        stop_payload = dict(stop)
+        stop_payload['nextArrivals'] = build_stop_next_arrivals(stop_payload, trip_schedules, datetime.now(timezone.utc), max_results=5)
+        stops.append(serialize_tracking_stop(stop_payload))
     return jsonify(
         {
             'ok': True,

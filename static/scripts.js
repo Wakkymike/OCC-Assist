@@ -173,6 +173,11 @@ function initializeMap() {
   const selectedOriginDeparture = document.querySelector('#tracking-selected-origin-departure');
   const selectedLastStop = document.querySelector('#tracking-selected-last-stop');
   const selectedUpdated = document.querySelector('#tracking-selected-updated');
+  const selectedStopPanel = document.querySelector('#tracking-stop-panel');
+  const selectedStopName = document.querySelector('#tracking-selected-stop-name');
+  const selectedStopCode = document.querySelector('#tracking-selected-stop-code');
+  const selectedStopId = document.querySelector('#tracking-selected-stop-id');
+  const selectedStopArrivals = document.querySelector('#tracking-selected-stop-arrivals');
   const boltonCenter = [-2.428219, 53.576864];
   const hasMapboxToken = Boolean(window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE');
   let map = null;
@@ -362,6 +367,19 @@ function initializeMap() {
       });
     };
 
+    const renderStopArrivalMarkup = (arrivals = []) => {
+      if (!Array.isArray(arrivals) || !arrivals.length) {
+        return '<li class="muted">No upcoming BNGN services.</li>';
+      }
+
+      return arrivals.map((arrival) => {
+        const route = String(arrival?.routeId || arrival?.serviceId || 'BNGN').trim() || 'BNGN';
+        const direction = arrival?.direction ? ` ${formatVehicleDirection(arrival.direction)}` : '';
+        const countdown = String(arrival?.countdownLabel || 'Due now').trim() || 'Due now';
+        return `<li><span class="stop-arrival-service">${escapeHtml(route)}${escapeHtml(direction)}</span><span class="stop-arrival-countdown">${escapeHtml(countdown)}</span></li>`;
+      }).join('');
+    };
+
     const setSidebarEmpty = (message) => {
       if (sidebarEmpty) {
         sidebarEmpty.textContent = message;
@@ -370,6 +388,26 @@ function initializeMap() {
       if (sidebarPanel) {
         sidebarPanel.hidden = true;
       }
+      if (selectedStopPanel) selectedStopPanel.hidden = true;
+    };
+
+    const setSidebarStop = (stop) => {
+      if (!stop || !selectedStopPanel) {
+        return;
+      }
+
+      const stopName = String(stop.name || 'Unknown stop').trim() || 'Unknown stop';
+      const stopCode = String(stop.naptan || stop.stopCode || stop.id || 'Unknown').trim() || 'Unknown';
+      const stopIdValue = String(stop.stopId || stop.id || 'Unknown').trim() || 'Unknown';
+      const nextArrivals = Array.isArray(stop.nextArrivals) ? stop.nextArrivals : [];
+
+      if (sidebarEmpty) sidebarEmpty.hidden = true;
+      if (sidebarPanel) sidebarPanel.hidden = false;
+      selectedStopPanel.hidden = false;
+      if (selectedStopName) selectedStopName.textContent = stopName;
+      if (selectedStopCode) selectedStopCode.textContent = stopCode;
+      if (selectedStopId) selectedStopId.textContent = stopIdValue;
+      if (selectedStopArrivals) selectedStopArrivals.innerHTML = renderStopArrivalMarkup(nextArrivals);
     };
 
     const setSidebarVehicle = (vehicle) => {
@@ -384,6 +422,7 @@ function initializeMap() {
       if (sidebarPanel) {
         sidebarPanel.hidden = false;
       }
+      if (selectedStopPanel) selectedStopPanel.hidden = true;
       const fleetDisplay = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
       if (selectedService) selectedService.textContent = fleetDisplay;
       if (selectedRoute) selectedRoute.textContent = formatRouteLabel(vehicle);
@@ -536,8 +575,11 @@ function initializeMap() {
             geometry: { type: 'Point', coordinates: [stop.longitude, stop.latitude] },
             properties: {
               stopId: stop.id,
-              naptan: stop.naptan || stop.id,
+              id: stop.id,
+              naptan: stop.naptan || stop.stopCode || stop.id,
+              stopCode: stop.stopCode || stop.naptan || stop.id,
               name: stop.name,
+              nextArrivals: stop.nextArrivals || [],
             },
           })),
         };
@@ -551,6 +593,34 @@ function initializeMap() {
         if (stopToggle) stopToggle.disabled = true;
       }
     };
+
+    const selectStop = (stopProperties) => {
+      if (!stopProperties) {
+        return;
+      }
+      const normalizedStop = {
+        id: stopProperties.id || stopProperties.stopId || '',
+        stopId: stopProperties.stopId || stopProperties.id || '',
+        name: stopProperties.name || 'Unknown stop',
+        naptan: stopProperties.naptan || stopProperties.stopCode || stopProperties.id || '',
+        stopCode: stopProperties.stopCode || stopProperties.naptan || stopProperties.id || '',
+        nextArrivals: Array.isArray(stopProperties.nextArrivals) ? stopProperties.nextArrivals : [],
+      };
+      setSidebarStop(normalizedStop);
+    };
+
+    map.on('click', 'gnw-stop-overlay', (event) => {
+      const features = event.features || [];
+      if (!features.length) return;
+      const properties = features[0].properties || {};
+      selectStop(properties);
+    });
+
+    map.on('click', () => {
+      if (selectedStopPanel && !selectedStopPanel.hidden) {
+        selectedStopPanel.hidden = true;
+      }
+    });
 
     const renderVehicles = (vehicles, observedAtMs) => {
       const activeIds = new Set();

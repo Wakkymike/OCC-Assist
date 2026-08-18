@@ -559,6 +559,45 @@ body::before {
   font-size: 0.92rem;
 }
 
+.tracking-stop-arrivals-block {
+  margin-top: 16px;
+}
+
+.sidebar-subheading {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.tracking-stop-arrivals {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tracking-stop-arrivals li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #eef3ff;
+  font-size: 0.86rem;
+}
+
+.tracking-stop-arrivals .muted {
+  color: var(--muted);
+}
+
+.stop-arrival-countdown {
+  color: #9de8ff;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .map-toolbar {
   margin-top: 18px;
   display: flex;

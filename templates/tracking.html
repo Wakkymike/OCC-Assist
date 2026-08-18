@@ -113,6 +113,29 @@
           </dl>
           <p id="tracking-selected-updated" class="sidebar-note"></p>
         </article>
+
+        <article class="tracking-sidebar-panel tracking-stop-side-panel" id="tracking-stop-panel" hidden>
+          <div class="section-row">
+            <div>
+              <p class="brand-subtitle">Selected stop</p>
+              <h2 id="tracking-selected-stop-name">Stop</h2>
+            </div>
+          </div>
+          <dl class="tracking-detail-list">
+            <div>
+              <dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-stop" aria-hidden="true"><path d="M12 21s6-4.5 6-10a6 6 0 1 0-12 0c0 5.5 6 10 6 10z"/><circle cx="12" cy="11" r="2.2"/></svg><span>Naptan / ATCO</span></span></dt>
+              <dd id="tracking-selected-stop-code">—</dd>
+            </div>
+            <div>
+              <dt><span class="label-with-icon"><svg viewBox="0 0 24 24" class="info-icon icon-route" aria-hidden="true"><path d="M4 19h16"/><path d="M6 16V8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8"/><circle cx="8" cy="19" r="1.5"/><circle cx="16" cy="19" r="1.5"/></svg><span>Stop ID</span></span></dt>
+              <dd id="tracking-selected-stop-id">—</dd>
+            </div>
+          </dl>
+          <div class="tracking-stop-arrivals-block">
+            <p class="sidebar-subheading">Next BNGN arrivals</p>
+            <ul id="tracking-selected-stop-arrivals" class="tracking-stop-arrivals"></ul>
+          </div>
+        </article>
       </aside>
     </div>
   </section>
