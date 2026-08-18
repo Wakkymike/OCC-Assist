@@ -1816,6 +1816,83 @@ def build_live_stop_arrivals(
     arrivals.sort(key=lambda item: int(item.get('countdownSeconds') or 0))
     return arrivals[:max_results]
 
+def build_board_matched_stop_arrivals(
+    stop: dict[str, object],
+    scheduled_arrivals: list[dict[str, object]],
+    trip_schedules: dict[str, object],
+    live_vehicles: list[dict[str, object]],
+    route_labels: dict[str, str],
+    max_results: int = 5,
+) -> list[dict[str, object]]:
+    if not isinstance(stop, dict):
+        return []
+
+    stop_latitude = stop.get('latitude')
+    stop_longitude = stop.get('longitude')
+    if stop_latitude is None or stop_longitude is None:
+        return []
+
+    vehicles_by_board: dict[str, dict[str, object]] = {}
+    for vehicle in live_vehicles:
+        if not isinstance(vehicle, dict):
+            continue
+        for value in (
+            vehicle.get('boardNumber'),
+            vehicle.get('blockRef'),
+            vehicle.get('journeyCode'),
+            vehicle.get('vehicleJourneyRef'),
+            vehicle.get('journeyRef'),
+        ):
+            board_key = normalize_tracking_key(str(value or ''))
+            if board_key:
+                vehicles_by_board[board_key] = vehicle
+
+    arrivals: list[dict[str, object]] = []
+    seen_fleets: set[str] = set()
+    for scheduled_arrival in scheduled_arrivals:
+        trip_id = str(scheduled_arrival.get('tripId') or '').strip()
+        schedule = trip_schedules.get(trip_id)
+        if not isinstance(schedule, dict):
+            continue
+        board_key = normalize_tracking_key(str(schedule.get('blockId') or ''))
+        vehicle = vehicles_by_board.get(board_key) if board_key else None
+        if not isinstance(vehicle, dict):
+            continue
+
+        latitude = vehicle.get('latitude')
+        longitude = vehicle.get('longitude')
+        if latitude is None or longitude is None:
+            continue
+        latitude_scale = 111132.92
+        longitude_scale = 111412.84 * max(0.01, math.cos(math.radians(float(stop_latitude))))
+        direct_distance_meters = math.hypot(
+            (float(longitude) - float(stop_longitude)) * longitude_scale,
+            (float(latitude) - float(stop_latitude)) * latitude_scale,
+        )
+        estimated_seconds = max(30, int((direct_distance_meters * 1.35) / 5.0))
+        fleet_number = str(vehicle.get('fleetNumber') or 'Unknown').strip() or 'Unknown'
+        fleet_key = normalize_tracking_key(fleet_number)
+        if fleet_key in seen_fleets:
+            continue
+        seen_fleets.add(fleet_key)
+
+        route_id = str(schedule.get('routeId') or scheduled_arrival.get('routeId') or '').strip()
+        service = str(vehicle.get('routeLabel') or '').strip() or route_labels.get(route_id) or route_id or 'Unknown'
+        arrivals.append(
+            {
+                'service': service,
+                'fleetNumber': fleet_number,
+                'boardNumber': str(vehicle.get('boardNumber') or schedule.get('blockId') or '').strip() or None,
+                'direction': vehicle.get('direction') or scheduled_arrival.get('direction'),
+                'countdownSeconds': estimated_seconds,
+                'countdownLabel': format_countdown_label(estimated_seconds),
+                'source': 'live-board',
+            }
+        )
+
+    arrivals.sort(key=lambda item: int(item.get('countdownSeconds') or 0))
+    return arrivals[:max_results]
+
 
 def select_last_stop_passed(vehicle: dict[str, object], route_sequence: dict[str, object] | None) -> dict[str, object] | None:
     if not route_sequence:
@@ -2697,15 +2774,23 @@ def tracking_stop_details(stop_id: str):
         raw_vehicles = []
     live_vehicles = enrich_tracking_vehicles(raw_vehicles, cache) if raw_vehicles else []
     trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
+    scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, datetime.now(timezone.utc))
+    route_labels = {
+        str(route.get('id') or '').strip(): str(route.get('label') or route.get('lineName') or route.get('id') or '').strip()
+        for route in cache.get('routes', [])
+        if isinstance(route, dict)
+    }
     stop_payload = serialize_tracking_stop(stop)
-    stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules)
+    stop_payload['nextArrivals'] = build_board_matched_stop_arrivals(
+        stop,
+        scheduled_arrivals,
+        trip_schedules,
+        live_vehicles,
+        route_labels,
+    )
     if not stop_payload['nextArrivals']:
-        scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, datetime.now(timezone.utc))
-        route_labels = {
-            str(route.get('id') or '').strip(): str(route.get('label') or route.get('lineName') or route.get('id') or '').strip()
-            for route in cache.get('routes', [])
-            if isinstance(route, dict)
-        }
+        stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules)
+    if not stop_payload['nextArrivals']:
         seen_services: set[tuple[str, str]] = set()
         fallback_arrivals = []
         for arrival in scheduled_arrivals:

@@ -52,6 +52,39 @@ def test_live_stop_arrivals_include_service_and_fleet_number():
     assert arrivals[0]['countdownSeconds'] > 0
 
 
+def test_board_matched_stop_arrivals_use_live_fleet_number():
+    stop = {'stopId': '0100B123', 'name': 'Market Street', 'latitude': 53.4, 'longitude': -2.3}
+    scheduled_arrivals = [{'tripId': 'trip-1', 'routeId': '10', 'direction': 'outbound'}]
+    trip_schedules = {
+        'trip-1': {
+            'routeId': '10',
+            'blockId': 'RB-77',
+        }
+    }
+    live_vehicles = [
+        {
+            'boardNumber': 'RB-77',
+            'routeLabel': '10',
+            'fleetNumber': '6123',
+            'direction': 'outbound',
+            'latitude': 53.39,
+            'longitude': -2.3,
+        }
+    ]
+
+    arrivals = app_module.build_board_matched_stop_arrivals(
+        stop,
+        scheduled_arrivals,
+        trip_schedules,
+        live_vehicles,
+        {'10': '10'},
+    )
+
+    assert arrivals[0]['service'] == '10'
+    assert arrivals[0]['fleetNumber'] == '6123'
+    assert arrivals[0]['boardNumber'] == 'RB-77'
+
+
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
     vehicle = {
         'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
