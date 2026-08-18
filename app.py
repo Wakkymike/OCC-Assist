@@ -2698,6 +2698,19 @@ def tracking_stop_details(stop_id: str):
     trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
     stop_payload = serialize_tracking_stop(stop)
     stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules)
+    if not stop_payload['nextArrivals']:
+        scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, datetime.now(timezone.utc))
+        stop_payload['nextArrivals'] = [
+            {
+                'service': arrival.get('routeId') or arrival.get('serviceId') or 'Unknown',
+                'fleetNumber': 'Scheduled',
+                'direction': arrival.get('direction'),
+                'countdownSeconds': arrival.get('countdownSeconds'),
+                'countdownLabel': arrival.get('countdownLabel'),
+                'source': 'scheduled',
+            }
+            for arrival in scheduled_arrivals
+        ]
     return jsonify(
         {
             'ok': True,
