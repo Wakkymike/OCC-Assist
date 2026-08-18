@@ -309,6 +309,8 @@ function initializeMap() {
     const stopHitLayerId = 'gnw-stop-overlay-hit-area';
     let stopInteractionsBound = false;
     let lastStopClickAt = 0;
+    let selectedStopIdentifier = null;
+    let stopDetailsRefreshIntervalId = null;
     const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
 
@@ -376,10 +378,11 @@ function initializeMap() {
       }
 
       return arrivals.map((arrival) => {
-        const route = String(arrival?.routeId || arrival?.serviceId || 'BNGN').trim() || 'BNGN';
+        const service = String(arrival?.service || arrival?.routeId || arrival?.serviceId || 'Unknown').trim() || 'Unknown';
+        const fleet = String(arrival?.fleetNumber || 'Unknown fleet').trim() || 'Unknown fleet';
         const direction = arrival?.direction ? ` ${formatVehicleDirection(arrival.direction)}` : '';
         const countdown = String(arrival?.countdownLabel || 'Due now').trim() || 'Due now';
-        return `<li><span class="stop-arrival-service">${escapeHtml(route)}${escapeHtml(direction)}</span><span class="stop-arrival-countdown">${escapeHtml(countdown)}</span></li>`;
+        return `<li><span class="stop-arrival-service">${escapeHtml(service)} ${escapeHtml(fleet)}${escapeHtml(direction)}</span><span class="stop-arrival-countdown">${escapeHtml(countdown)}</span></li>`;
       }).join('');
     };
 
@@ -392,6 +395,7 @@ function initializeMap() {
         sidebarPanel.hidden = true;
       }
       if (selectedStopPanel) selectedStopPanel.hidden = true;
+      selectedStopIdentifier = null;
     };
 
     const setSidebarStop = (stop) => {
@@ -426,6 +430,7 @@ function initializeMap() {
         sidebarPanel.hidden = false;
       }
       if (selectedStopPanel) selectedStopPanel.hidden = true;
+      selectedStopIdentifier = null;
       const fleetDisplay = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
       if (selectedService) selectedService.textContent = fleetDisplay;
       if (selectedRoute) selectedRoute.textContent = formatRouteLabel(vehicle);
@@ -628,10 +633,17 @@ function initializeMap() {
         stopCode: stopProperties.stopCode || stopProperties.naptan || stopProperties.id || '',
         nextArrivals: Array.isArray(stopProperties.nextArrivals) ? stopProperties.nextArrivals : [],
       };
+      selectedStopIdentifier = normalizedStop.stopId;
       setSidebarStop(normalizedStop);
-      const stopId = String(normalizedStop.stopId || '').trim();
-      if (!stopId || !window.OCC_ASSIST.trackingStopsUrl) return;
+      refreshSelectedStopDetails();
+      if (stopDetailsRefreshIntervalId === null) {
+        stopDetailsRefreshIntervalId = window.setInterval(refreshSelectedStopDetails, 10000);
+      }
+    };
 
+    const refreshSelectedStopDetails = () => {
+      const stopId = String(selectedStopIdentifier || '').trim();
+      if (!stopId || !window.OCC_ASSIST.trackingStopsUrl) return;
       fetch(`${window.OCC_ASSIST.trackingStopsUrl}/${encodeURIComponent(stopId)}`, { cache: 'no-store' })
         .then((response) => response.json())
         .then((payload) => {

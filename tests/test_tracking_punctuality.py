@@ -25,6 +25,33 @@ def test_serialize_tracking_stop_includes_naptan_code_and_next_arrivals():
     assert payload['nextArrivals'][0]['countdownSeconds'] == 300
 
 
+def test_live_stop_arrivals_include_service_and_fleet_number():
+    stop = {'stopId': '0100B123', 'name': 'Market Street', 'latitude': 53.4, 'longitude': -2.3}
+    vehicles = [
+        {
+            'routeId': '10',
+            'routeLabel': '10',
+            'fleetNumber': '6123',
+            'direction': 'outbound',
+            'latitude': 53.39,
+            'longitude': -2.3,
+        }
+    ]
+    trip_schedules = {
+        'trip-1': {
+            'routeId': '10',
+            'direction': 'outbound',
+            'stops': [{'stopId': '0100B123', 'name': 'Market Street'}],
+        }
+    }
+
+    arrivals = app_module.build_live_stop_arrivals(stop, vehicles, trip_schedules)
+
+    assert arrivals[0]['service'] == '10'
+    assert arrivals[0]['fleetNumber'] == '6123'
+    assert arrivals[0]['countdownSeconds'] > 0
+
+
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
     vehicle = {
         'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',
