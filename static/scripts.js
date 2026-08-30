@@ -62,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeDrivingHours();
   initializeDailyOverview();
   initializeSettingsPage();
+  initializeContactsPage();
 });
 
 function setMessage(element, message, variant = '') {
@@ -178,6 +179,10 @@ function initializeMap() {
   const selectedStopCode = document.querySelector('#tracking-selected-stop-code');
   const selectedStopId = document.querySelector('#tracking-selected-stop-id');
   const selectedStopArrivals = document.querySelector('#tracking-selected-stop-arrivals');
+  const trackingSearchType = document.querySelector('#tracking-search-type');
+  const trackingSearchQuery = document.querySelector('#tracking-search-query');
+  const trackingSearchSubmit = document.querySelector('#tracking-search-submit');
+  const trackingFollowToggle = document.querySelector('#tracking-follow-toggle');
   const boltonCenter = [-2.428219, 53.576864];
   const hasMapboxToken = Boolean(window.MAPBOX_TOKEN && window.MAPBOX_TOKEN !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE');
   let map = null;
@@ -298,6 +303,7 @@ function initializeMap() {
     const vehicleDataById = new Map();
     let selectedVehicleId = null;
     let selectedVehicleFleet = null;
+    let followSelectedVehicle = false;
     let refreshIntervalId = null;
     let stopFeatureCollection = { type: 'FeatureCollection', features: [] };
     let stopFeaturesLoaded = false;
@@ -352,6 +358,61 @@ function initializeMap() {
       if (routeStatus) {
         routeStatus.textContent = message;
       }
+    };
+
+    const centerVehicleOnMap = (vehicle, immediate = false) => {
+      if (!mapAvailable || !map || !vehicle) return;
+      const lng = Number(vehicle.longitude);
+      const lat = Number(vehicle.latitude);
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+      const zoom = Math.max(14.5, Number(map.getZoom?.() || 14.5));
+      map.easeTo({
+        center: [lng, lat],
+        zoom,
+        duration: immediate ? 0 : 650,
+      });
+    };
+
+    const syncFollowButton = () => {
+      if (!trackingFollowToggle) return;
+      trackingFollowToggle.classList.toggle('is-following', followSelectedVehicle);
+      trackingFollowToggle.setAttribute('aria-pressed', followSelectedVehicle ? 'true' : 'false');
+      trackingFollowToggle.textContent = followSelectedVehicle ? 'Following vehicle' : 'Follow vehicle';
+    };
+
+    const executeVehicleSearch = () => {
+      const query = String(trackingSearchQuery?.value || '').trim().toLowerCase();
+      const searchType = String(trackingSearchType?.value || 'fleetNumber');
+      if (!query) {
+        setMessage(mapStatus, 'Enter a fleet or running board number to search.', 'error');
+        return;
+      }
+
+      const vehicles = Array.from(vehicleDataById.values());
+      const getSearchValue = (vehicle) => {
+        if (searchType === 'runningBoard') {
+          // Match what users see in the sidebar board field.
+          return formatBoardNumber(vehicle).toLowerCase();
+        }
+        return String(vehicle?.fleetNumber || '').trim().toLowerCase();
+      };
+
+      const exactMatch = vehicles.find((vehicle) => getSearchValue(vehicle) === query);
+      let match = exactMatch || null;
+      if (!match) {
+        const partialMatches = vehicles.filter((vehicle) => getSearchValue(vehicle).includes(query));
+        if (partialMatches.length === 1) {
+          match = partialMatches[0];
+        }
+      }
+
+      if (!match || !match.id) {
+        setMessage(mapStatus, 'No matching vehicle found.', 'error');
+        return;
+      }
+
+      selectVehicle(match.id, { enableFollow: true, center: true });
+      setMessage(mapStatus, `Tracking fleet ${match.fleetNumber}.`, 'success');
     };
 
     const removeVehicleMarker = (state) => {
@@ -456,17 +517,29 @@ function initializeMap() {
       if (selectedUpdated) selectedUpdated.textContent = `Updated ${formatFeedTime(vehicle.recordedAt || vehicle.sourceTimestamp || vehicle.refreshedAt)}`;
     };
 
-    const selectVehicle = (vehicleId) => {
+    const selectVehicle = (vehicleId, options = {}) => {
+      const enableFollow = Boolean(options.enableFollow);
+      const shouldCenter = options.center !== false;
+
       selectedVehicleId = vehicleId;
       if (!vehicleId) {
         selectedVehicleFleet = null;
+        followSelectedVehicle = false;
+        syncFollowButton();
         setSidebarEmpty('Select a bus marker to inspect its service details.');
         syncSelectedMarkerStyles();
         return;
       }
       const selectedVehicle = vehicleDataById.get(vehicleId) || null;
       selectedVehicleFleet = normalizeFleetKey(selectedVehicle?.fleetNumber);
+      if (enableFollow) {
+        followSelectedVehicle = true;
+      }
+      syncFollowButton();
       setSidebarVehicle(selectedVehicle);
+      if (selectedVehicle && shouldCenter) {
+        centerVehicleOnMap(selectedVehicle);
+      }
       syncSelectedMarkerStyles();
     };
 
@@ -583,10 +656,10 @@ function initializeMap() {
 
     const updateRouteOptions = (routes, selectedRouteValue) => {
       if (!routeSelect) return;
-      const currentSelection = selectedRouteValue || routeSelect.value || 'all';
-      routeSelect.innerHTML = ['<option value="all">All uploaded routes</option>', ...routes.map((route) => `<option value="${escapeHtml(route.id || '')}">${escapeHtml(route.label || route.lineName || route.id || 'Route')}</option>`)].join('');
+      const currentSelection = selectedRouteValue || routeSelect.value || '';
+      routeSelect.innerHTML = ['<option value="">Select a service to display</option>', ...routes.map((route) => `<option value="${escapeHtml(route.id || '')}">${escapeHtml(route.label || route.lineName || route.id || 'Route')}</option>`)].join('');
       const routeIds = routes.map((route) => String(route.id || ''));
-      routeSelect.value = currentSelection === 'all' || routeIds.includes(currentSelection) ? currentSelection : 'all';
+      routeSelect.value = routeIds.includes(currentSelection) ? currentSelection : '';
     };
 
     const loadTrackingStops = async () => {
@@ -693,6 +766,9 @@ function initializeMap() {
         const selectedVehicle = vehicleDataById.get(selectedVehicleId);
         selectedVehicleFleet = normalizeFleetKey(selectedVehicle?.fleetNumber);
         setSidebarVehicle(selectedVehicle);
+        if (followSelectedVehicle && selectedVehicle) {
+          centerVehicleOnMap(selectedVehicle);
+        }
       }
       syncSelectedMarkerStyles();
       return visibleVehicleCount;
@@ -720,32 +796,51 @@ function initializeMap() {
         return;
       }
       try {
-        const selectedRouteValue = routeSelect?.value || 'all';
+        const selectedRouteValue = String(routeSelect?.value || '').trim();
         const selectedDirectionValue = directionSelect?.value || 'all';
-        const query = new URLSearchParams({ route: selectedRouteValue, direction: selectedDirectionValue });
+        const routeForFetch = selectedRouteValue || 'all';
+        const query = new URLSearchParams({ route: routeForFetch, direction: selectedDirectionValue });
         const response = await fetch(`${window.OCC_ASSIST.trackingStaticRoutesUrl}?${query.toString()}`, { cache: 'no-store' });
         const payload = await response.json();
         if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load static route data.');
+
         const routes = payload.routes || [];
-        updateRouteOptions(routes, payload.selectedRoute || 'all');
+        updateRouteOptions(routes, selectedRouteValue);
         if (directionSelect) directionSelect.value = payload.selectedDirection || selectedDirectionValue;
-        const overlayVisible = Boolean(routeToggle?.checked) && payload.configured;
-        applyRouteOverlay(payload.featureCollection || emptyRouteFeatureCollection, overlayVisible);
-        setRouteControlsEnabled(Boolean(routeToggle?.checked) && payload.configured);
+
+        const overlayRequested = Boolean(routeToggle?.checked);
+        const hasRouteSelection = Boolean(routeSelect?.value);
+        const overlayVisible = overlayRequested && payload.configured && hasRouteSelection;
+        const overlayData = hasRouteSelection ? (payload.featureCollection || emptyRouteFeatureCollection) : emptyRouteFeatureCollection;
+
+        applyRouteOverlay(overlayData, overlayVisible);
+        setRouteControlsEnabled(overlayRequested && payload.configured);
+        if (directionSelect) {
+          directionSelect.disabled = !(overlayRequested && payload.configured && hasRouteSelection);
+        }
+
         if (!payload.configured) {
           setRouteStatus(payload.message || 'No GTFS ZIP has been uploaded yet.');
           return;
         }
-        if (overlayVisible) {
-          const selected = routeSelect?.value || 'all';
-          const directionLabel = selectedDirectionValue === 'inbound' ? 'Showing inbound trips only.' : selectedDirectionValue === 'outbound' ? 'Showing outbound trips only.' : 'Showing inbound and outbound trips.';
-          setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. ${selected === 'all' ? 'Showing all uploaded routes.' : `Showing route ${selected}.`} ${directionLabel}`);
-        } else {
+
+        if (!overlayRequested) {
           setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. Enable overlay to display paths.`);
+          return;
         }
+
+        if (!hasRouteSelection) {
+          setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. Select a service to display its path.`);
+          return;
+        }
+
+        const selected = routeSelect?.value || '';
+        const directionLabel = selectedDirectionValue === 'inbound' ? 'Showing inbound trips only.' : selectedDirectionValue === 'outbound' ? 'Showing outbound trips only.' : 'Showing inbound and outbound trips.';
+        setRouteStatus(`${payload.routeCount} route${payload.routeCount === 1 ? '' : 's'} loaded. Showing route ${selected}. ${directionLabel}`);
       } catch (error) {
         applyRouteOverlay(emptyRouteFeatureCollection, false);
         setRouteControlsEnabled(false);
+        if (directionSelect) directionSelect.disabled = true;
         setRouteStatus(error.message || 'Unable to load static route data.');
       }
     };
@@ -779,7 +874,7 @@ function initializeMap() {
     });
 
     setRouteControlsEnabled(false);
-    setRouteStatus('Load a GTFS ZIP from Users to display static route paths.');
+    setRouteStatus('Load a GTFS ZIP from Admin to display static route paths.');
     if (sidebarEmpty) setSidebarEmpty('Select a bus marker to inspect its service details.');
 
     if (routeToggle) {
@@ -805,6 +900,37 @@ function initializeMap() {
         applyStopOverlay(stopFeatureCollection, stopToggle.checked);
       });
     }
+
+    if (trackingSearchSubmit) {
+      trackingSearchSubmit.addEventListener('click', executeVehicleSearch);
+    }
+    if (trackingSearchQuery) {
+      trackingSearchQuery.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          executeVehicleSearch();
+        }
+      });
+    }
+    if (trackingFollowToggle) {
+      trackingFollowToggle.addEventListener('click', () => {
+        if (!selectedVehicleId) {
+          followSelectedVehicle = false;
+          syncFollowButton();
+          setMessage(mapStatus, 'Select a vehicle first, then enable follow.', 'error');
+          return;
+        }
+        followSelectedVehicle = !followSelectedVehicle;
+        syncFollowButton();
+        if (followSelectedVehicle) {
+          const vehicle = vehicleDataById.get(selectedVehicleId);
+          if (vehicle) {
+            centerVehicleOnMap(vehicle);
+          }
+        }
+      });
+    }
+    syncFollowButton();
 
     return;
   }
@@ -1578,7 +1704,35 @@ function initializeDailyOverview() {
     setMessage(overviewMessage, 'Shift data loaded.', 'success');
   };
 
-  const renderUpcomingShifts = (items) => {
+  const renderUpcomingShifts = (payload) => {
+    const items = Array.isArray(payload && payload.shifts) ? payload.shifts : [];
+    const weekDays = Array.isArray(payload && payload.weekDays) ? payload.weekDays : [];
+
+    if (payload && payload.scope === 'week' && weekDays.length) {
+      upcomingList.innerHTML = weekDays
+        .map((day) => {
+          const dayShifts = Array.isArray(day && day.shifts) ? day.shifts : [];
+          const shiftsMarkup = dayShifts.length
+            ? dayShifts.map((shift) => `
+                <article class="overview-card upcoming-item">
+                  <h3>${escapeHtml(shift.summary)}</h3>
+                  <p class="overview-window">${escapeHtml(shift.windowLabel)}</p>
+                  <p class="overview-location">${escapeHtml(shift.location || '')}</p>
+                </article>
+              `).join('')
+            : '<p class="hours-empty">No shifts assigned.</p>';
+
+          return `
+            <section class="upcoming-day-group">
+              <h3>${escapeHtml(day.dayLabel || day.dateIso || 'Day')}</h3>
+              ${shiftsMarkup}
+            </section>
+          `;
+        })
+        .join('');
+      return;
+    }
+
     if (!items.length) {
       upcomingList.innerHTML = '<p class="hours-empty">No upcoming shifts in this period.</p>';
       return;
@@ -1628,7 +1782,7 @@ function initializeDailyOverview() {
 
     upcomingPeriod.textContent = `${payload.scope === 'week' ? 'Week' : 'Month'}: ${payload.periodLabel}`;
     setMessage(upcomingMessage, `Loaded ${payload.shifts.length} shift${payload.shifts.length === 1 ? '' : 's'}.`, 'success');
-    renderUpcomingShifts(payload.shifts || []);
+    renderUpcomingShifts(payload || {});
   };
 
   const setUpcomingVisibility = (visible) => {
@@ -1726,6 +1880,157 @@ function initializeSettingsPage() {
   loadSettings();
 }
 
+
+function normalizeContactPhone(value) {
+  return String(value || '').replace(/[^0-9]/g, '');
+}
+
+function sortContactsAlphabetically(contacts) {
+  if (!Array.isArray(contacts)) return [];
+  return [...contacts].sort((a, b) => {
+    const aName = `${String(a.firstName || '').trim()} ${String(a.lastName || '').trim()}`.trim().toLowerCase();
+    const bName = `${String(b.firstName || '').trim()} ${String(b.lastName || '').trim()}`.trim().toLowerCase();
+    const byFullName = aName.localeCompare(bName, 'en', { sensitivity: 'base' });
+    if (byFullName !== 0) return byFullName;
+
+    const byFirstName = String(a.firstName || '').localeCompare(String(b.firstName || ''), 'en', { sensitivity: 'base' });
+    if (byFirstName !== 0) return byFirstName;
+
+    const byLastName = String(a.lastName || '').localeCompare(String(b.lastName || ''), 'en', { sensitivity: 'base' });
+    if (byLastName !== 0) return byLastName;
+
+    return Number(a.id || 0) - Number(b.id || 0);
+  });
+}
+
+function renderContactsRolodex(container, contacts) {
+  if (!container) return;
+  if (!Array.isArray(contacts) || !contacts.length) {
+    container.innerHTML = '<p class="saved-empty">No contacts found.</p>';
+    return;
+  }
+
+  const sortedContacts = sortContactsAlphabetically(contacts);
+
+  container.innerHTML = sortedContacts.map((contact) => {
+    const fullName = `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unknown';
+    const importantBadge = contact.isImportant ? '<span class="contact-flag important">Important</span>' : '';
+    const privateBadge = contact.isPrivate ? '<span class="contact-flag private">Internal only</span>' : '';
+    return `
+      <article class="contact-card">
+        <header class="contact-card-head">
+          <div>
+            <h3>${escapeHtml(fullName)}</h3>
+            <p>${escapeHtml(contact.jobRole || 'Unknown role')}${contact.jobTitle && contact.jobTitle !== contact.jobRole ? ` - ${escapeHtml(contact.jobTitle)}` : ''}</p>
+          </div>
+          <div class="contact-card-flags">${importantBadge}${privateBadge}</div>
+        </header>
+        <dl class="contact-detail-list">
+          <div><dt>Depot / Location</dt><dd>${escapeHtml(contact.depotLocation || 'Unknown')}</dd></div>
+          <div><dt>Phone</dt><dd><a href="tel:${escapeHtml(contact.phoneNumber || '')}">${escapeHtml(contact.phoneNumber || 'Unknown')}</a></dd></div>
+        </dl>
+      </article>
+    `;
+  }).join('');
+}
+
+
+function renderContactsAdminList(container, contacts) {
+  if (!container) return;
+  if (!Array.isArray(contacts) || !contacts.length) {
+    container.innerHTML = '<p class="saved-empty">No contacts found.</p>';
+    return;
+  }
+
+  const sortedContacts = sortContactsAlphabetically(contacts);
+
+  container.innerHTML = sortedContacts.map((contact) => {
+    const fullName = `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unknown';
+    const importantBadge = contact.isImportant ? '<span class="contact-flag important">Important</span>' : '';
+    const privateBadge = contact.isPrivate ? '<span class="contact-flag private">Internal only</span>' : '';
+    return `
+      <article class="contact-card" data-contact-id="${contact.id}">
+        <header class="contact-card-head">
+          <div>
+            <h3>${escapeHtml(fullName)}</h3>
+            <p>${escapeHtml(contact.jobRole || 'Unknown role')}${contact.jobTitle && contact.jobTitle !== contact.jobRole ? ` - ${escapeHtml(contact.jobTitle)}` : ''}</p>
+          </div>
+          <div class="contact-card-flags">${importantBadge}${privateBadge}</div>
+        </header>
+        <dl class="contact-detail-list">
+          <div><dt>Depot / Location</dt><dd>${escapeHtml(contact.depotLocation || 'Unknown')}</dd></div>
+          <div><dt>Phone</dt><dd><a href="tel:${escapeHtml(contact.phoneNumber || '')}">${escapeHtml(contact.phoneNumber || 'Unknown')}</a></dd></div>
+        </dl>
+        <div class="contacts-card-actions">
+          <button type="button" class="btn secondary compact" data-action="edit-contact" data-contact-id="${contact.id}">Edit</button>\n          <button type="button" class="btn danger compact" data-action="delete-contact" data-contact-id="${contact.id}">Delete</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function initializeContactsPage() {
+  const contactsApp = document.querySelector('#contacts-app');
+  const contactsList = document.querySelector('#contacts-list');
+  const contactsSearchInput = document.querySelector('#contacts-search-input');
+  const contactsSearchMeta = document.querySelector('#contacts-search-meta');
+  const contactsMessage = document.querySelector('#contacts-message');
+
+  if (!contactsApp || !contactsList || !contactsSearchInput) {
+    return;
+  }
+
+  let allContacts = [];
+
+  const applySearch = () => {
+    const query = String(contactsSearchInput.value || '').trim().toLowerCase();
+    if (!query) {
+      renderContactsRolodex(contactsList, allContacts);
+      if (contactsSearchMeta) contactsSearchMeta.textContent = `${allContacts.length} contact${allContacts.length === 1 ? '' : 's'} available.`;
+      return;
+    }
+
+    const queryDigits = normalizeContactPhone(query);
+    const filtered = allContacts.filter((contact) => {
+      const fullName = `${contact.firstName || ''} ${contact.lastName || ''}`.toLowerCase();
+      const jobRole = String(contact.jobRole || '').toLowerCase();
+      const jobTitle = String(contact.jobTitle || '').toLowerCase();
+      const location = String(contact.depotLocation || '').toLowerCase();
+      const phone = normalizeContactPhone(contact.phoneNumber || '');
+      const textMatch = fullName.includes(query) || jobRole.includes(query) || jobTitle.includes(query) || location.includes(query);
+      const phoneMatch = Boolean(queryDigits) && phone.includes(queryDigits);
+      return textMatch || phoneMatch;
+    });
+
+    renderContactsRolodex(contactsList, filtered);
+    if (contactsSearchMeta) contactsSearchMeta.textContent = `${filtered.length} match${filtered.length === 1 ? '' : 'es'} for "${query}".`;
+  };
+
+  const loadContacts = async () => {
+    if (!window.OCC_ASSIST.contactsApiUrl) {
+      setMessage(contactsMessage, 'Contacts API is not configured.', 'error');
+      return;
+    }
+    setMessage(contactsMessage, 'Loading contacts...');
+    const response = await fetch(window.OCC_ASSIST.contactsApiUrl, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      setMessage(contactsMessage, payload.message || 'Unable to load contacts.', 'error');
+      return;
+    }
+
+    allContacts = sortContactsAlphabetically(Array.isArray(payload.contacts) ? payload.contacts : []);
+    renderContactsRolodex(contactsList, allContacts);
+    if (contactsSearchMeta) contactsSearchMeta.textContent = `${allContacts.length} contact${allContacts.length === 1 ? '' : 's'} available.`;
+    setMessage(contactsMessage, 'Contacts loaded.', 'success');
+  };
+
+  contactsSearchInput.addEventListener('input', applySearch);
+  loadContacts().catch((error) => {
+    setMessage(contactsMessage, error.message || 'Unable to load contacts.', 'error');
+  });
+}
+
 function initializeUsersPage() {
   const userForm = document.querySelector('#user-form');
   const usersList = document.querySelector('#users-list');
@@ -1737,10 +2042,82 @@ function initializeUsersPage() {
   const gtfsUploadMessage = document.querySelector('#gtfs-upload-message');
   const gtfsUploadSummary = document.querySelector('#gtfs-upload-summary');
   const refreshGtfsStatusButton = document.querySelector('#refresh-gtfs-status');
+    const toggleGtfsManualLockButton = document.querySelector('#toggle-gtfs-manual-lock');
+  const refreshAdminDataStatusButton = document.querySelector('#refresh-admin-data-status');
+  const adminDataLastCheck = document.querySelector('#admin-data-last-check');
+  const adminBodsStatus = document.querySelector('#admin-bods-status');
+  const adminGtfsStatus = document.querySelector('#admin-gtfs-status');
+    const gtfsManualLockSummary = document.querySelector('#gtfs-manual-lock-summary');
+  const adminDataStatusMessage = document.querySelector('#admin-data-status-message');
+  const contactsEncryptionSummary = document.querySelector('#contacts-encryption-summary');
+  const contactsEncryptionMessage = document.querySelector('#contacts-encryption-message');
+  const refreshContactsEncryptionStatusButton = document.querySelector('#refresh-contacts-encryption-status');
+  const contactForm = document.querySelector('#contact-form');
+  const contactFormMessage = document.querySelector('#contact-form-message');
+  const contactsAdminMessage = document.querySelector('#contacts-admin-message');
+  const contactsAdminList = document.querySelector('#contacts-admin-list');
+  const contactsAdminSearchQuery = document.querySelector('#contacts-admin-search-query');
+  const contactsAdminSearchSubmit = document.querySelector('#contacts-admin-search-submit');
+  const contactsAdminSearchClear = document.querySelector('#contacts-admin-search-clear');
+  const contactEditIdInput = document.querySelector('#contact-edit-id');
+  const saveContactButton = document.querySelector('#save-contact-button');
+  const cancelContactEditButton = document.querySelector('#cancel-contact-edit');
 
   if (!userForm || !usersList) {
     return;
   }
+
+  const createPermissionInputs = Array.from(userForm.querySelectorAll('input[name="permission"]'));
+  const createAdminPermissionInput = createPermissionInputs.find((input) => input.value === 'admin_privileges');
+  const syncCreateUserPermissionInputs = () => {
+    if (!createAdminPermissionInput || !createAdminPermissionInput.checked) {
+      createPermissionInputs.forEach((input) => {
+        if (input.value !== 'admin_privileges') {
+          input.disabled = false;
+        }
+      });
+      return;
+    }
+
+    createPermissionInputs.forEach((input) => {
+      if (input.value !== 'admin_privileges') {
+        input.checked = true;
+        input.disabled = true;
+      }
+    });
+  };
+
+  if (createAdminPermissionInput) {
+    createAdminPermissionInput.addEventListener('change', syncCreateUserPermissionInputs);
+    syncCreateUserPermissionInputs();
+  }
+
+  let contactsAdminCache = [];
+
+  const resetContactEditMode = () => {
+    if (contactEditIdInput) contactEditIdInput.value = '';
+    if (saveContactButton) saveContactButton.textContent = 'Add contact';
+    if (cancelContactEditButton) cancelContactEditButton.hidden = true;
+  };
+
+  const startContactEditMode = (contactId) => {
+    const idValue = String(contactId || '').trim();
+    if (!idValue) return;
+    const match = contactsAdminCache.find((contact) => String(contact.id) === idValue);
+    if (!match || !contactForm) return;
+
+    contactForm.firstName.value = match.firstName || '';
+    contactForm.lastName.value = match.lastName || '';
+    contactForm.jobRole.value = match.jobRole || '';
+    contactForm.depotLocation.value = match.depotLocation || '';
+    contactForm.phoneNumber.value = match.phoneNumber || '';
+    contactForm.isImportant.checked = Boolean(match.isImportant);
+    contactForm.isPrivate.checked = Boolean(match.isPrivate);
+    if (contactEditIdInput) contactEditIdInput.value = String(match.id);
+    if (saveContactButton) saveContactButton.textContent = 'Save contact changes';
+    if (cancelContactEditButton) cancelContactEditButton.hidden = false;
+    contactForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const loadUsers = async () => {
     setMessage(usersMessage, 'Loading users...');
@@ -1756,7 +2133,47 @@ function initializeUsersPage() {
     setMessage(usersMessage, `${payload.users.length} user${payload.users.length === 1 ? '' : 's'} loaded.`, 'success');
   };
 
-  const loadGtfsStatus = async () => {
+
+  const loadContactsAdmin = async (queryOverride = null) => {
+    if (!contactsAdminList || !window.OCC_ASSIST.contactsApiUrl) {
+      return;
+    }
+
+    const rawQuery = queryOverride === null
+      ? String(contactsAdminSearchQuery ? contactsAdminSearchQuery.value : '').trim()
+      : String(queryOverride || '').trim();
+
+    if (!rawQuery) {
+      contactsAdminCache = [];
+      contactsAdminList.innerHTML = '<p class="saved-empty">Search for a contact to view, edit, or delete.</p>';
+      setMessage(contactsAdminMessage, 'Enter a search term to find contacts.');
+      return;
+    }
+
+    setMessage(contactsAdminMessage, `Searching contacts for "${rawQuery}"...`);
+    const response = await fetch(`${window.OCC_ASSIST.contactsApiUrl}?q=${encodeURIComponent(rawQuery)}`, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      setMessage(contactsAdminMessage, payload.message || 'Unable to search contacts.', 'error');
+      return;
+    }
+
+    const contacts = sortContactsAlphabetically(Array.isArray(payload.contacts) ? payload.contacts : []);
+    contactsAdminCache = contacts;
+    renderContactsAdminList(contactsAdminList, contacts);
+    setMessage(contactsAdminMessage, `${contacts.length} match${contacts.length === 1 ? '' : 'es'} for "${rawQuery}".`, 'success');
+  };
+
+  const setGtfsManualLockButton = (enabled) => {
+      if (!toggleGtfsManualLockButton) {
+        return;
+      }
+      const isEnabled = Boolean(enabled);
+      toggleGtfsManualLockButton.dataset.enabled = isEnabled ? '1' : '0';
+      toggleGtfsManualLockButton.textContent = isEnabled ? 'Manual upload lock: ON' : 'Manual upload lock: OFF';
+    };
+
+    const loadGtfsStatus = async () => {
     if (!window.OCC_ASSIST.gtfsStatusUrl || !gtfsUploadSummary) {
       return;
     }
@@ -1774,7 +2191,94 @@ function initializeUsersPage() {
 
     const uploadedAt = payload.uploadedAt ? new Date(payload.uploadedAt).toLocaleString() : 'Unknown';
     const filename = payload.originalFilename || 'Uploaded file';
-    gtfsUploadSummary.textContent = `${payload.routeCount} routes available from ${filename} (uploaded ${uploadedAt}).`;
+    const xmlCount = Number(payload.xmlSourceFileCount || 0);
+      const routeRows = Number(payload.sourceRouteRowCount || 0);
+      const sourceDetails = xmlCount > 0 ? ` Source XML files: ${xmlCount}. Source route rows: ${routeRows}.` : '';
+      gtfsUploadSummary.textContent = `${payload.routeCount} routes available from ${filename} (uploaded ${uploadedAt}).${sourceDetails}`;
+      if (Object.prototype.hasOwnProperty.call(payload, 'manualLockEnabled')) {
+        const lockEnabled = Boolean(payload.manualLockEnabled);
+        setGtfsManualLockButton(lockEnabled);
+        if (gtfsManualLockSummary) {
+          gtfsManualLockSummary.textContent = lockEnabled
+            ? 'Manual upload lock is ON. Auto-download updates are paused.'
+            : 'Manual upload lock is OFF. Auto-download updates are allowed.';
+        }
+      }
+  };
+
+
+  const loadContactsEncryptionStatus = async () => {
+    if (!window.OCC_ASSIST.contactsEncryptionStatusUrl || !contactsEncryptionSummary) {
+      return;
+    }
+
+    const response = await fetch(window.OCC_ASSIST.contactsEncryptionStatusUrl, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok || !payload.status) {
+      throw new Error(payload.message || 'Unable to load contacts encryption status.');
+    }
+
+    const status = payload.status || {};
+    const checkedAt = status.checkedAt ? new Date(status.checkedAt).toLocaleString() : 'Unknown';
+    contactsEncryptionSummary.textContent = `Contacts: ${Number(status.totalContacts || 0)}. Fully encrypted: ${Number(status.fullyEncryptedContacts || 0)}. Partial: ${Number(status.partiallyEncryptedContacts || 0)}. Plaintext: ${Number(status.plaintextContacts || 0)}. Coverage: ${Number(status.encryptedPercentage || 0)}%. Checked: ${checkedAt}.`;
+    if (contactsEncryptionMessage) {
+      setMessage(
+        contactsEncryptionMessage,
+        status.allEncrypted ? 'All contacts are encrypted at rest.' : 'Some contacts are not fully encrypted. Review migration and key configuration.',
+        status.allEncrypted ? 'success' : 'error',
+      );
+    }
+  };
+
+  const loadAdminDataStatus = async (force = false) => {
+    if (!window.OCC_ASSIST.adminDataStatusUrl) {
+      return;
+    }
+
+    const suffix = force ? '?force=1' : '';
+    const response = await fetch(`${window.OCC_ASSIST.adminDataStatusUrl}${suffix}`, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || 'Unable to load admin data status.');
+    }
+
+    const status = payload.status || {};
+    const bods = status.bods || {};
+    const gtfs = status.gtfs || {};
+    const checkedAt = status.lastCheckAt ? new Date(status.lastCheckAt).toLocaleString() : 'Unknown';
+
+    if (adminDataLastCheck) {
+      adminDataLastCheck.textContent = `Last automatic check: ${checkedAt}.`;
+    }
+    if (adminBodsStatus) {
+      const bodsState = bods.ok ? 'OK' : 'Issue';
+      const bodsActive = bods.active ? 'active' : 'inactive';
+      const sourceTs = bods.sourceTimestamp ? ` Source timestamp: ${bods.sourceTimestamp}.` : '';
+      adminBodsStatus.textContent = `BODS: ${bodsState}, ${bodsActive}. Vehicles: ${Number(bods.vehicleCount || 0)}. ${bods.message || ''}${sourceTs}`.trim();
+      adminBodsStatus.className = `message ${bods.ok ? 'success' : 'error'}`;
+    }
+    if (adminGtfsStatus) {
+      const gtfsState = gtfs.ok ? 'OK' : 'Issue';
+      const gtfsActive = gtfs.active ? 'active' : 'inactive';
+      const uploadedAt = gtfs.uploadedAt ? new Date(gtfs.uploadedAt).toLocaleString() : 'Unknown';
+      const filename = gtfs.originalFilename || 'No file';
+      const autoNote = gtfs.autoUpdateMessage ? ` ${gtfs.autoUpdateMessage}` : '';
+        const xmlCount = Number(gtfs.xmlSourceFileCount || 0);
+        const sourceRouteRows = Number(gtfs.sourceRouteRowCount || 0);
+        const sourceDetails = xmlCount > 0 ? ` Source XML files: ${xmlCount}. Source route rows: ${sourceRouteRows}.` : '';
+        const lockEnabled = Boolean(gtfs.manualLockEnabled);
+        setGtfsManualLockButton(lockEnabled);
+        if (gtfsManualLockSummary) {
+          gtfsManualLockSummary.textContent = lockEnabled
+            ? 'Manual upload lock is ON. Auto-download updates are paused.'
+            : 'Manual upload lock is OFF. Auto-download updates are allowed.';
+        }
+      adminGtfsStatus.textContent = `GTFS: ${gtfsState}, ${gtfsActive}. Routes: ${Number(gtfs.routeCount || 0)}. File: ${filename}. Uploaded: ${uploadedAt}.${sourceDetails} ${gtfs.message || ''}${autoNote}`.trim();
+      adminGtfsStatus.className = `message ${gtfs.ok ? 'success' : 'error'}`;
+    }
+    if (adminDataStatusMessage) {
+      setMessage(adminDataStatusMessage, force ? 'Admin data check completed.' : 'Admin data status loaded.', 'success');
+    }
   };
 
   userForm.addEventListener('submit', async (event) => {
@@ -1831,6 +2335,7 @@ function initializeUsersPage() {
     }
 
     setMessage(usersMessage, 'Permission updated.', 'success');
+    await loadUsers();
   });
 
   usersList.addEventListener('click', async (event) => {
@@ -1917,9 +2422,201 @@ function initializeUsersPage() {
     await loadUsers();
   });
 
-  refreshButton.addEventListener('click', () => {
-    loadUsers();
-  });
+    refreshButton.addEventListener('click', () => {
+      loadUsers();
+    });
+
+    if (refreshAdminDataStatusButton) {
+      refreshAdminDataStatusButton.addEventListener('click', () => {
+        if (adminDataStatusMessage) {
+          setMessage(adminDataStatusMessage, 'Running admin data check...');
+        }
+        loadAdminDataStatus(true).catch((error) => {
+          if (adminDataStatusMessage) {
+            setMessage(adminDataStatusMessage, error.message || 'Unable to run admin data check.', 'error');
+          }
+        });
+      });
+    }
+
+    if (adminDataLastCheck || adminBodsStatus || adminGtfsStatus || adminDataStatusMessage) {
+      loadAdminDataStatus(false).catch((error) => {
+        if (adminDataStatusMessage) {
+          setMessage(adminDataStatusMessage, error.message || 'Unable to load admin data status.', 'error');
+        }
+      });
+    }
+
+    if (refreshContactsEncryptionStatusButton) {
+      refreshContactsEncryptionStatusButton.addEventListener('click', () => {
+        if (contactsEncryptionMessage) {
+          setMessage(contactsEncryptionMessage, 'Refreshing contacts encryption status...');
+        }
+        loadContactsEncryptionStatus().catch((error) => {
+          if (contactsEncryptionMessage) {
+            setMessage(contactsEncryptionMessage, error.message || 'Unable to load contacts encryption status.', 'error');
+          }
+        });
+      });
+    }
+
+    if (contactsEncryptionSummary || contactsEncryptionMessage) {
+      loadContactsEncryptionStatus().catch((error) => {
+        if (contactsEncryptionMessage) {
+          setMessage(contactsEncryptionMessage, error.message || 'Unable to load contacts encryption status.', 'error');
+        }
+      });
+    }
+
+
+  if (contactForm && contactFormMessage && contactsAdminMessage) {
+    contactForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!window.OCC_ASSIST.createContactUrl) {
+        setMessage(contactFormMessage, 'Contacts API is not configured.', 'error');
+        return;
+      }
+
+      const editingId = contactEditIdInput ? String(contactEditIdInput.value || '').trim() : '';
+      const payload = {
+        firstName: contactForm.firstName.value.trim(),
+        lastName: contactForm.lastName.value.trim(),
+        jobRole: contactForm.jobRole.value.trim(),
+        jobTitle: contactForm.jobTitle ? contactForm.jobTitle.value.trim() : '',
+        depotLocation: contactForm.depotLocation.value.trim(),
+        phoneNumber: contactForm.phoneNumber.value.trim(),
+        isImportant: Boolean(contactForm.isImportant.checked),
+        isPrivate: Boolean(contactForm.isPrivate.checked),
+      };
+
+      const isEditing = Boolean(editingId);
+      const endpoint = isEditing ? `${window.OCC_ASSIST.contactsApiUrl}/${encodeURIComponent(editingId)}` : window.OCC_ASSIST.createContactUrl;
+      const method = isEditing ? 'PATCH' : 'POST';
+      setMessage(contactFormMessage, isEditing ? 'Saving contact changes...' : 'Adding contact...');
+
+      const response = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        if (!isEditing && response.status === 409 && result.duplicate) {
+          const confirmSave = window.confirm(result.message || 'Possible duplicate detected. Save anyway?');
+          if (!confirmSave) {
+            setMessage(contactFormMessage, 'Duplicate save cancelled.', 'error');
+            return;
+          }
+
+          const duplicatePayload = { ...payload, forceSaveDuplicate: true };
+          setMessage(contactFormMessage, 'Saving duplicate contact...');
+          const duplicateResponse = await fetch(window.OCC_ASSIST.createContactUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(duplicatePayload),
+          });
+          const duplicateResult = await duplicateResponse.json();
+          if (!duplicateResponse.ok || !duplicateResult.ok) {
+            setMessage(contactFormMessage, duplicateResult.message || 'Unable to save duplicate contact.', 'error');
+            return;
+          }
+        } else {
+          setMessage(contactFormMessage, result.message || 'Unable to save contact.', 'error');
+          return;
+        }
+      }
+
+      contactForm.reset();
+      resetContactEditMode();
+      setMessage(contactFormMessage, isEditing ? 'Contact updated.' : 'Contact added.', 'success');
+      await loadContactsAdmin();
+    });
+
+    if (contactsAdminSearchSubmit) {
+      contactsAdminSearchSubmit.addEventListener('click', () => {
+        loadContactsAdmin().catch((error) => {
+          setMessage(contactsAdminMessage, error.message || 'Unable to search contacts.', 'error');
+        });
+      });
+    }
+
+    if (contactsAdminSearchQuery) {
+      contactsAdminSearchQuery.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          loadContactsAdmin().catch((error) => {
+            setMessage(contactsAdminMessage, error.message || 'Unable to search contacts.', 'error');
+          });
+        }
+      });
+    }
+
+    if (contactsAdminSearchClear) {
+      contactsAdminSearchClear.addEventListener('click', () => {
+        if (contactsAdminSearchQuery) contactsAdminSearchQuery.value = '';
+        contactsAdminCache = [];
+        if (contactsAdminList) {
+          contactsAdminList.innerHTML = '<p class="saved-empty">Search for a contact to view, edit, or delete.</p>';
+        }
+        setMessage(contactsAdminMessage, 'Search cleared.');
+      });
+    }
+
+    if (cancelContactEditButton) {
+      cancelContactEditButton.addEventListener('click', () => {
+        contactForm.reset();
+        resetContactEditMode();
+        setMessage(contactFormMessage, 'Edit cancelled.', 'success');
+      });
+    }
+
+    if (contactsAdminList) {
+      contactsAdminList.addEventListener('click', async (event) => {
+        const editButton = event.target.closest('[data-action="edit-contact"]');
+        if (editButton) {
+          event.preventDefault();
+          const contactId = editButton.dataset.contactId;
+          startContactEditMode(contactId);
+          setMessage(contactFormMessage, 'Editing existing contact.', 'success');
+          return;
+        }
+
+        const deleteButton = event.target.closest('[data-action="delete-contact"]');
+        if (!deleteButton) return;
+
+        event.preventDefault();
+        const contactId = String(deleteButton.dataset.contactId || '').trim();
+        if (!contactId) return;
+
+        const match = contactsAdminCache.find((contact) => String(contact.id) === contactId);
+        const fullName = match ? `${match.firstName || ''} ${match.lastName || ''}`.trim() : 'this contact';
+        const confirmed = window.confirm(`Delete ${fullName}? This cannot be undone.`);
+        if (!confirmed) return;
+
+        setMessage(contactsAdminMessage, `Deleting ${fullName}...`);
+        const response = await fetch(`${window.OCC_ASSIST.contactsApiUrl}/${encodeURIComponent(contactId)}`, {
+          method: 'DELETE',
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          setMessage(contactsAdminMessage, payload.message || 'Unable to delete contact.', 'error');
+          return;
+        }
+
+        if (contactEditIdInput && contactEditIdInput.value === contactId) {
+          contactForm.reset();
+          resetContactEditMode();
+        }
+
+        setMessage(contactsAdminMessage, 'Contact deleted.', 'success');
+        await loadContactsAdmin();
+      });
+    }
+
+    if (contactsAdminList) {
+      contactsAdminList.innerHTML = '<p class="saved-empty">Search for a contact to view, edit, or delete.</p>';
+    }
+  }
 
   if (gtfsUploadForm && gtfsFileInput && gtfsUploadMessage && gtfsUploadSummary) {
     gtfsUploadForm.addEventListener('submit', async (event) => {
@@ -1958,9 +2655,46 @@ function initializeUsersPage() {
         });
       });
     }
+
+      if (toggleGtfsManualLockButton && window.OCC_ASSIST.gtfsManualLockUrl) {
+        toggleGtfsManualLockButton.addEventListener('click', async () => {
+          const current = toggleGtfsManualLockButton.dataset.enabled === '1';
+          const next = !current;
+          if (adminDataStatusMessage) {
+            setMessage(adminDataStatusMessage, next ? 'Enabling manual upload lock...' : 'Disabling manual upload lock...');
+          }
+
+          const response = await fetch(window.OCC_ASSIST.gtfsManualLockUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ enabled: next }),
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload.message || 'Unable to update manual lock state.');
+          }
+
+          setGtfsManualLockButton(Boolean(payload.enabled));
+          if (adminDataStatusMessage) {
+            setMessage(adminDataStatusMessage, payload.message || 'Manual lock updated.', 'success');
+          }
+
+          await loadAdminDataStatus(false);
+          await loadGtfsStatus();
+        });
+      }
   }
 
   loadUsers();
+  if (contactsAdminList) {
+    loadContactsAdmin().catch((error) => {
+      if (contactsAdminMessage) {
+        setMessage(contactsAdminMessage, error.message || 'Unable to load contacts.', 'error');
+      }
+    });
+  }
   if (gtfsUploadSummary) {
     loadGtfsStatus().catch((error) => {
       if (gtfsUploadMessage) {
@@ -1973,14 +2707,17 @@ function initializeUsersPage() {
 function renderUsers(container, users, permissionLabels) {
   const currentUser = window.OCC_ASSIST.currentUser || {};
   const canDeleteUsers = Boolean(
-    currentUser.isSuperadmin || currentUser.permissions?.admin_privileges || currentUser.permissions?.user_management,
+    currentUser.isSuperadmin || currentUser.permissions?.admin_privileges,
   );
 
   container.innerHTML = users
     .map((user) => {
+      const isSiteAdmin = Boolean(user.isSuperadmin || user.permissions.admin_privileges);
       const permissionMarkup = Object.entries(permissionLabels)
         .map(([permissionKey, label]) => {
-          const isLocked = user.isSuperadmin;
+          const isAdminPrivilegeToggle = permissionKey === 'admin_privileges';
+          const isLocked = Boolean(user.isSuperadmin || (isSiteAdmin && !isAdminPrivilegeToggle));
+          const isEnabled = Boolean(user.permissions[permissionKey] || (isSiteAdmin && !isAdminPrivilegeToggle));
           return `
             <label class="permission-toggle">
               <span>${label}</span>
@@ -1989,7 +2726,7 @@ function renderUsers(container, users, permissionLabels) {
                   type="checkbox"
                   data-user-id="${user.id}"
                   data-permission-key="${permissionKey}"
-                  ${user.permissions[permissionKey] ? 'checked' : ''}
+                  ${isEnabled ? 'checked' : ''}
                   ${isLocked ? 'disabled' : ''}
                 />
                 <span></span>
@@ -2017,6 +2754,12 @@ function renderUsers(container, users, permissionLabels) {
       const forcePasswordResetButtonMarkup = canDeleteUsers && !isSelf
         ? `<button class="btn secondary compact" type="button" data-action="force-password-reset" data-user-id="${user.id}" data-user-email="${user.email}">Force password reset</button>`
         : '';
+      const roleBadgeClass = user.isSuperadmin
+        ? 'badge-superadmin'
+        : (user.permissions.admin_privileges ? 'badge-site-admin' : 'badge-standard-user');
+      const roleBadgeLabel = user.isSuperadmin
+        ? 'Superadmin'
+        : (user.permissions.admin_privileges ? 'Site admin' : 'Standard user');
 
       return `
         <article class="user-card">
@@ -2027,7 +2770,7 @@ function renderUsers(container, users, permissionLabels) {
               <p class="user-meta">${sessionSummary}</p>
             </div>
             <div class="user-card-actions">
-              <span class="badge">${user.isSuperadmin ? 'Superadmin' : 'Standard user'}</span>
+              <span class="badge ${roleBadgeClass}">${roleBadgeLabel}</span>
               ${deleteButtonMarkup}
               ${forceLogoutButtonMarkup}
               ${forcePasswordResetButtonMarkup}

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import os
+import base64
 import re
 import json
+import hashlib
+import time
 import csv
 import io
 import math
 import secrets
 import shutil
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -21,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from cryptography.fernet import Fernet, InvalidToken
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,15 +36,18 @@ SUPERADMIN_PASSWORD = os.environ.get('OCC_ASSIST_SUPERADMIN_PASSWORD')
 PERMISSIONS = {
     'live_updates': 'Daily overview',
     'tracking': 'Tracking',
+    'service_overview': 'Service overview',
+    'contacts': 'Contacts',
     'driving_hours': 'Driving hours',
-    'user_management': 'User management',
     'admin_privileges': 'Admin privileges',
 }
 PAGE_PERMISSIONS = {
-    'live_updates': 'live_updates',
+    'daily_overview': 'live_updates',
     'tracking': 'tracking',
+    'service_overview': 'service_overview',
+    'contacts_page': 'contacts',
     'driving_hours': 'driving_hours',
-    'users': 'user_management',
+    'admin_page': 'admin_privileges',
 }
 SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
@@ -47,9 +55,35 @@ GTFS_DIR = INSTANCE_DIR / 'gtfs'
 GTFS_UPLOAD_PATH = GTFS_DIR / 'latest-gtfs.zip'
 GTFS_EXTRACT_DIR = GTFS_DIR / 'extracted'
 GTFS_CACHE_PATH = GTFS_DIR / 'routes-cache.json'
+GTFS_MANUAL_LOCK_PATH = GTFS_DIR / 'manual-lock.json'
 GTFS_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_GTFS_MAX_UPLOAD_BYTES', '60000000'))
 GTFS_ALLOWED_AGENCY_ID = str(os.environ.get('OCC_ASSIST_GTFS_ALLOWED_AGENCY_ID', 'OP11122')).strip()
 GTFS_MAX_FALLBACK_PATTERNS_PER_ROUTE = int(os.environ.get('OCC_ASSIST_GTFS_MAX_FALLBACK_PATTERNS_PER_ROUTE', '4'))
+GTFS_ALLOWED_ROUTE_PREFIXES = [
+    value.strip().upper()
+    for value in str(os.environ.get('OCC_ASSIST_GTFS_ALLOWED_ROUTE_PREFIXES', '')).split(',')
+    if value.strip()
+]
+DATA_HEALTH_STATUS_PATH = INSTANCE_DIR / 'data-health-status.json'
+AUTO_DATA_CHECK_INTERVAL_SECONDS = int(os.environ.get('OCC_ASSIST_AUTO_DATA_CHECK_INTERVAL_SECONDS', '900'))
+GTFS_AUTO_DOWNLOAD_URL = str(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_URL', '')).strip()
+GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS = int(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS', '45'))
+BODS_TIMETABLE_NOC = str(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_NOC', 'GONW')).strip().upper()
+BODS_TIMETABLE_LIMIT = int(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_LIMIT', '100'))
+TRANSXCHANGE_MAX_FILES = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_FILES', '180'))
+TRANSXCHANGE_MAX_TRIPS = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_TRIPS', '4000'))
+BODS_VEHICLE_CACHE_SECONDS = int(os.environ.get('OCC_ASSIST_BODS_VEHICLE_CACHE_SECONDS', '5'))
+_last_data_health_run_monotonic = 0.0
+_bods_vehicle_cache_lock = threading.Lock()
+_bods_vehicle_cache: dict[str, object] = {
+    'loadedAtMonotonic': 0.0,
+    'vehicles': [],
+    'sourceTimestamp': '',
+    'hasData': False,
+}
+
+CONTACT_ENCRYPTION_PREFIX = 'enc:v1:'
+_contacts_cipher: Fernet | None = None
 
 
 app = Flask(__name__)
@@ -81,6 +115,116 @@ def get_db() -> sqlite3.Connection:
         g.db = connection
     return g.db
 
+
+def get_contacts_cipher() -> Fernet:
+    global _contacts_cipher
+    if _contacts_cipher is not None:
+        return _contacts_cipher
+
+    explicit_key = str(os.environ.get('OCC_ASSIST_CONTACTS_ENCRYPTION_KEY', '')).strip()
+    if explicit_key:
+        key_bytes = explicit_key.encode('utf-8')
+    else:
+        secret = str(os.environ.get('OCC_ASSIST_CONTACTS_ENCRYPTION_SECRET') or app.config.get('SECRET_KEY') or '').strip()
+        if not secret:
+            raise RuntimeError('Missing contacts encryption secret.')
+        key_bytes = base64.urlsafe_b64encode(hashlib.sha256(secret.encode('utf-8')).digest())
+
+    _contacts_cipher = Fernet(key_bytes)
+    return _contacts_cipher
+
+
+def is_encrypted_contact_value(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(CONTACT_ENCRYPTION_PREFIX)
+
+
+def encrypt_contact_value(value: object) -> str:
+    plain = str(value or '')
+    if is_encrypted_contact_value(plain):
+        return plain
+    token = get_contacts_cipher().encrypt(plain.encode('utf-8')).decode('utf-8')
+    return f"{CONTACT_ENCRYPTION_PREFIX}{token}"
+
+
+def decrypt_contact_value(value: object) -> str:
+    if value is None:
+        return ''
+    text = str(value)
+    if not is_encrypted_contact_value(text):
+        return text
+
+    token_bytes = text[len(CONTACT_ENCRYPTION_PREFIX):].encode('utf-8')
+    try:
+        return get_contacts_cipher().decrypt(token_bytes).decode('utf-8')
+    except InvalidToken:
+        # Fallback for data encrypted before runtime env secrets were loaded.
+        legacy_default_secret = 'change-me-before-production'
+        current_secret = str(os.environ.get('OCC_ASSIST_CONTACTS_ENCRYPTION_SECRET') or app.config.get('SECRET_KEY') or '').strip()
+        if legacy_default_secret and legacy_default_secret != current_secret:
+            legacy_key = base64.urlsafe_b64encode(hashlib.sha256(legacy_default_secret.encode('utf-8')).digest())
+            try:
+                return Fernet(legacy_key).decrypt(token_bytes).decode('utf-8')
+            except InvalidToken:
+                pass
+        return ''
+
+def encrypt_existing_contacts(database: sqlite3.Connection) -> None:
+    rows = database.execute(
+        '''
+        SELECT id, first_name, last_name, job_role, job_title, depot_location, phone_number
+        FROM contacts
+        '''
+    ).fetchall()
+    for row in rows:
+        updates: dict[str, str] = {}
+        for column in ('first_name', 'last_name', 'job_role', 'job_title', 'depot_location', 'phone_number'):
+            current_value = row[column]
+            if current_value is None:
+                continue
+
+            current_text = str(current_value)
+            plain_value = decrypt_contact_value(current_text)
+
+            is_primary_encrypted = False
+            if is_encrypted_contact_value(current_text):
+                token_bytes = current_text[len(CONTACT_ENCRYPTION_PREFIX):].encode('utf-8')
+                try:
+                    get_contacts_cipher().decrypt(token_bytes)
+                    is_primary_encrypted = True
+                except InvalidToken:
+                    is_primary_encrypted = False
+
+            if is_primary_encrypted:
+                continue
+
+            updates[column] = encrypt_contact_value(plain_value)
+
+        if not updates:
+            continue
+
+        database.execute(
+            '''
+            UPDATE contacts
+            SET first_name = COALESCE(?, first_name),
+                last_name = COALESCE(?, last_name),
+                job_role = COALESCE(?, job_role),
+                job_title = COALESCE(?, job_title),
+                depot_location = COALESCE(?, depot_location),
+                phone_number = COALESCE(?, phone_number)
+            WHERE id = ?
+            ''',
+            (
+                updates.get('first_name'),
+                updates.get('last_name'),
+                updates.get('job_role'),
+                updates.get('job_title'),
+                updates.get('depot_location'),
+                updates.get('phone_number'),
+                int(row['id']),
+            ),
+        )
+
+    database.commit()
 
 @app.teardown_appcontext
 def close_db(_: object | None) -> None:
@@ -151,10 +295,33 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_user_sessions_user_active
         ON user_sessions (user_id, active, last_activity_at DESC);
+
+        CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            first_name TEXT NOT NULL,
+            last_name TEXT NOT NULL,
+            job_role TEXT NOT NULL,
+            job_title TEXT NOT NULL,
+            depot_location TEXT NOT NULL,
+            phone_number TEXT NOT NULL,
+            is_important INTEGER NOT NULL DEFAULT 0,
+            is_private INTEGER NOT NULL DEFAULT 0,
+            created_by_user_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_contacts_name
+        ON contacts (last_name, first_name);
+
+        CREATE INDEX IF NOT EXISTS idx_contacts_phone
+        ON contacts (phone_number);
         '''
     )
     database.commit()
     ensure_superadmin(database)
+    sync_user_permissions_schema(database)
+    encrypt_existing_contacts(database)
 
 
 def cleanup_expired_snapshots(database: sqlite3.Connection, user_id: int | None = None) -> None:
@@ -194,6 +361,40 @@ def ensure_superadmin(database: sqlite3.Connection) -> None:
             ''',
             (user_id, permission_key),
         )
+    database.commit()
+
+
+def sync_user_permissions_schema(database: sqlite3.Connection) -> None:
+    users = database.execute('SELECT id, is_superadmin FROM users').fetchall()
+    for user in users:
+        user_id = int(user['id'])
+        permission_rows = database.execute(
+            'SELECT permission_key, enabled FROM permissions WHERE user_id = ?',
+            (user_id,),
+        ).fetchall()
+        existing = {str(row['permission_key']): bool(row['enabled']) for row in permission_rows}
+
+        tracking_enabled = bool(existing.get('tracking', False))
+        for permission_key in PERMISSIONS:
+            if permission_key in existing:
+                continue
+            default_enabled = tracking_enabled if permission_key in {'service_overview', 'contacts'} else False
+            database.execute(
+                'INSERT INTO permissions (user_id, permission_key, enabled) VALUES (?, ?, ?)',
+                (user_id, permission_key, int(default_enabled)),
+            )
+
+        if bool(user['is_superadmin']) or bool(existing.get('admin_privileges', False)):
+            for permission_key in PERMISSIONS:
+                database.execute(
+                    '''
+                    INSERT INTO permissions (user_id, permission_key, enabled)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(user_id, permission_key) DO UPDATE SET enabled = 1
+                    ''',
+                    (user_id, permission_key),
+                )
+
     database.commit()
 
 
@@ -337,6 +538,22 @@ def login_required(permission_key: str | None = None):
     return decorator
 
 
+def login_required_any(permission_keys: tuple[str, ...]):
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapped_view(*args, **kwargs):
+            user = get_current_user()
+            if user is None:
+                return redirect(url_for('index'))
+            if permission_keys and not any(has_permission(user, key) for key in permission_keys):
+                abort(403)
+            return view_func(*args, **kwargs)
+
+        return wrapped_view
+
+    return decorator
+
+
 @app.context_processor
 def inject_user_context() -> dict[str, object]:
     user = get_current_user()
@@ -356,6 +573,9 @@ def inject_user_context() -> dict[str, object]:
         'page_permissions': PAGE_PERMISSIONS,
         'tracking_stops_url': url_for('tracking_stops'),
         'service_overview_url': url_for('service_overview'),
+        'admin_data_status_url': url_for('admin_data_status'),
+        'admin_contacts_encryption_status_url': url_for('admin_contacts_encryption_status'),
+        'admin_gtfs_manual_lock_url': url_for('admin_gtfs_manual_lock'),
     }
 
 
@@ -626,6 +846,23 @@ def daily_overview_upcoming_shifts():
     if not include_rest_days:
         filtered_events = [event for event in filtered_events if not is_rest_day_or_holiday_event(event)]
 
+    serialized_shifts = [serialize_shift_event(event) for event in filtered_events]
+    week_days: list[dict[str, object]] = []
+    if scope == 'week':
+        for day_index in range(7):
+            day_start_local = period_start_local + timedelta(days=day_index)
+            day_events = [
+                event for event in filtered_events
+                if event['start'].astimezone(LONDON_TZ).date() == day_start_local.date()
+            ]
+            week_days.append(
+                {
+                    'dateIso': day_start_local.date().isoformat(),
+                    'dayLabel': day_start_local.strftime('%A %d %b'),
+                    'shifts': [serialize_shift_event(event) for event in day_events],
+                }
+            )
+
     return jsonify(
         {
             'ok': True,
@@ -633,7 +870,8 @@ def daily_overview_upcoming_shifts():
             'scope': scope,
             'offset': offset,
             'periodLabel': period_label,
-            'shifts': [serialize_shift_event(event) for event in filtered_events],
+            'shifts': serialized_shifts,
+            'weekDays': week_days,
             'weekStartsOn': 'Sunday',
         }
     )
@@ -646,9 +884,15 @@ def tracking():
 
 
 @app.get('/service-overview')
-@login_required('tracking')
+@login_required('service_overview')
 def service_overview():
     return render_template('service-overview.html')
+
+
+@app.get('/contacts')
+@login_required('contacts')
+def contacts_page():
+    return render_template('contacts.html')
 
 
 def get_xml_text(node: ET.Element | None, path: str) -> str:
@@ -667,6 +911,39 @@ def get_bods_feed_url() -> str | None:
         return None
     query = urlencode({'api_key': api_key})
     return f'https://data.bus-data.dft.gov.uk/api/v1/datafeed/{feed_id}/?{query}'
+
+
+def get_latest_bods_timetable_dataset_download_url() -> tuple[str | None, dict[str, object] | None]:
+    api_key = app.config['BODS_API_KEY']
+    noc = BODS_TIMETABLE_NOC
+    if not api_key or not noc:
+        return None, None
+
+    query = urlencode({'api_key': api_key, 'noc': noc, 'limit': BODS_TIMETABLE_LIMIT})
+    url = f'https://data.bus-data.dft.gov.uk/api/v1/dataset/?{query}'
+    try:
+        with urlopen(url, timeout=GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode('utf-8', errors='replace'))
+    except Exception:
+        return None, None
+
+    results = payload.get('results', []) if isinstance(payload, dict) else []
+    if not isinstance(results, list) or not results:
+        return None, None
+
+    published = [
+        row for row in results
+        if isinstance(row, dict)
+        and str(row.get('status') or '').lower() == 'published'
+        and str(row.get('extension') or '').lower() == 'zip'
+        and isinstance(row.get('url'), str)
+    ]
+    if not published:
+        return None, None
+
+    published.sort(key=lambda row: str(row.get('modified') or ''), reverse=True)
+    selected = published[0]
+    return str(selected.get('url') or ''), selected
 
 
 def parse_bods_timestamp(value: str) -> datetime | None:
@@ -1175,6 +1452,39 @@ def fetch_bods_vehicles() -> tuple[list[dict[str, object]], str]:
         )
 
     return items, response_timestamp
+
+
+def fetch_bods_vehicles_cached(force: bool = False) -> tuple[list[dict[str, object]], str]:
+    cache_ttl = max(1, int(BODS_VEHICLE_CACHE_SECONDS))
+    now_monotonic = time.monotonic()
+
+    with _bods_vehicle_cache_lock:
+        loaded_at = float(_bods_vehicle_cache.get('loadedAtMonotonic') or 0.0)
+        if not force and loaded_at > 0 and (now_monotonic - loaded_at) < cache_ttl:
+            return list(_bods_vehicle_cache.get('vehicles') or []), str(_bods_vehicle_cache.get('sourceTimestamp') or '')
+
+    try:
+        vehicles, source_timestamp = fetch_bods_vehicles()
+    except Exception:
+        with _bods_vehicle_cache_lock:
+            loaded_at = float(_bods_vehicle_cache.get('loadedAtMonotonic') or 0.0)
+            if loaded_at > 0 and (now_monotonic - loaded_at) < max(cache_ttl * 3, 20):
+                return list(_bods_vehicle_cache.get('vehicles') or []), str(_bods_vehicle_cache.get('sourceTimestamp') or '')
+            # Prevent repeated slow failures by briefly caching an empty result.
+            _bods_vehicle_cache['loadedAtMonotonic'] = now_monotonic
+            _bods_vehicle_cache['vehicles'] = []
+            _bods_vehicle_cache['sourceTimestamp'] = ''
+            _bods_vehicle_cache['hasData'] = False
+            return [], ''
+
+    with _bods_vehicle_cache_lock:
+        _bods_vehicle_cache['loadedAtMonotonic'] = now_monotonic
+        _bods_vehicle_cache['vehicles'] = vehicles
+        _bods_vehicle_cache['sourceTimestamp'] = source_timestamp
+        _bods_vehicle_cache['hasData'] = True
+
+    return list(vehicles), str(source_timestamp)
+
 
 
 def normalize_tracking_key(value: str) -> str:
@@ -1934,7 +2244,7 @@ def enrich_tracking_vehicles(vehicles: list[dict[str, object]], cache: dict[str,
         normalized_service = normalize_tracking_key(service)
         route = route_lookup.get(normalized_service)
         route_id = str(route.get('id') or '').strip() if route else ''
-        route_label = str(route.get('label') or route.get('lineName') or service or route_id).strip()
+        route_label = str((route.get('label') if route else '') or (route.get('lineName') if route else '') or service or route_id).strip()
         direction = normalize_gtfs_direction(str(vehicle.get('direction') or ''))
         route_direction_sequences = route_sequences.get(route_id, {}) if route_id else {}
         if not isinstance(route_direction_sequences, dict):
@@ -2198,10 +2508,373 @@ def unzip_gtfs_archive(zip_bytes: bytes) -> Path:
             with archive.open(member) as source_handle:
                 destination.write_bytes(source_handle.read())
 
+    # If this is a TransXChange ZIP, synthesize GTFS text files for downstream parsing.
+    if find_gtfs_file(GTFS_EXTRACT_DIR, 'routes.txt') is None:
+        convert_transxchange_directory_to_gtfs(GTFS_EXTRACT_DIR)
+
     return GTFS_EXTRACT_DIR
 
 
-def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
+
+def extract_route_prefix(route_id: object) -> str:
+    value = str(route_id or '').strip().upper()
+    if not value:
+        return ''
+    if ':' in value:
+        return value.split(':', 1)[0].strip()
+    return value
+
+
+def extract_route_prefixes_from_cache(cache: dict[str, object] | None) -> list[str]:
+    if not isinstance(cache, dict):
+        return []
+    routes = cache.get('routes')
+    if not isinstance(routes, list):
+        return []
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        prefix = extract_route_prefix(route.get('id'))
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        ordered.append(prefix)
+    return ordered
+
+
+
+def detect_best_pc_route_prefix(extracted_dir: Path) -> str:
+    routes_path = find_gtfs_file(extracted_dir, 'routes.txt')
+    if routes_path is None:
+        return ''
+
+    counts: dict[str, int] = {}
+    for row in read_gtfs_rows(routes_path):
+        prefix = extract_route_prefix(row.get('route_id'))
+        if not prefix or not re.match(r'^PC\d+$', prefix):
+            continue
+        counts[prefix] = counts.get(prefix, 0) + 1
+
+    if not counts:
+        return ''
+
+    def sort_key(item: tuple[str, int]) -> tuple[int, int, str]:
+        prefix, count = item
+        try:
+            numeric = int(prefix[2:])
+        except ValueError:
+            numeric = -1
+        return (count, numeric, prefix)
+
+    return max(counts.items(), key=sort_key)[0]
+
+def parse_iso8601_duration_seconds(value: str) -> int:
+    text = str(value or '').strip().upper()
+    if not text:
+        return 0
+    match = re.match(r'^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', text)
+    if not match:
+        return 0
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    return max(0, (hours * 3600) + (minutes * 60) + seconds)
+
+
+def format_gtfs_hhmmss(total_seconds: int) -> str:
+    safe = max(0, int(total_seconds))
+    hours = safe // 3600
+    minutes = (safe % 3600) // 60
+    seconds = safe % 60
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+
+
+def extract_transxchange_section_sequences(root: ET.Element, namespace: dict[str, str]) -> dict[str, list[dict[str, object]]]:
+    sequences: dict[str, list[dict[str, object]]] = {}
+    for section in root.findall('.//tx:JourneyPatternSection', namespace):
+        section_id = str(section.attrib.get('id') or '').strip()
+        if not section_id:
+            continue
+        links = []
+        for link in section.findall('tx:JourneyPatternTimingLink', namespace):
+            link_id = str(link.attrib.get('id') or '').strip()
+            from_node = link.find('tx:From', namespace)
+            to_node = link.find('tx:To', namespace)
+            from_stop = str(from_node.findtext('tx:StopPointRef', default='', namespaces=namespace) if from_node is not None else '').strip()
+            to_stop = str(to_node.findtext('tx:StopPointRef', default='', namespaces=namespace) if to_node is not None else '').strip()
+            try:
+                sequence = int(str((from_node.attrib.get('SequenceNumber') if from_node is not None else '') or '0').strip() or '0')
+            except ValueError:
+                sequence = 0
+            runtime_text = str(link.findtext('tx:RunTime', default='', namespaces=namespace) or '').strip()
+            links.append(
+                {
+                    'linkId': link_id,
+                    'sequence': sequence,
+                    'fromStop': from_stop,
+                    'toStop': to_stop,
+                    'runtimeSeconds': parse_iso8601_duration_seconds(runtime_text),
+                }
+            )
+        links.sort(key=lambda item: int(item.get('sequence', 0)))
+        if links:
+            sequences[section_id] = links
+    return sequences
+
+
+def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
+    xml_files = [path for path in extracted_dir.rglob('*.xml') if path.is_file()]
+    if not xml_files:
+        return False
+
+    def tx_file_sort_key(path: Path) -> tuple[str, str]:
+        match = re.search(r'_(\d{8})_', path.name)
+        date_key = str(match.group(1)) if match else '00000000'
+        return (date_key, path.name)
+
+    xml_files.sort(key=tx_file_sort_key, reverse=True)
+    if TRANSXCHANGE_MAX_FILES > 0:
+        xml_files = xml_files[:TRANSXCHANGE_MAX_FILES]
+
+    tx_ns = {'tx': 'http://www.transxchange.org.uk/'}
+    stops_lookup: dict[str, dict[str, object]] = {}
+    routes: dict[str, dict[str, str]] = {}
+    journey_patterns: dict[str, dict[str, object]] = {}
+    section_links: dict[str, list[dict[str, object]]] = {}
+    trips: list[dict[str, object]] = []
+
+    for xml_path in xml_files:
+        try:
+            root = ET.fromstring(xml_path.read_text(encoding='utf-8', errors='replace'))
+        except Exception:
+            continue
+
+        file_scope = re.sub(r'[^A-Za-z0-9]+', '_', xml_path.stem).strip('_').lower() or 'tx'
+
+        def scoped(value: object) -> str:
+            raw = str(value or '').strip()
+            return f'{file_scope}:{raw}' if raw else ''
+
+        for stop_node in root.findall('.//tx:AnnotatedStopPointRef', tx_ns):
+            stop_ref = str(stop_node.findtext('tx:StopPointRef', default='', namespaces=tx_ns) or '').strip()
+            if not stop_ref:
+                continue
+            name = str(stop_node.findtext('tx:CommonName', default='', namespaces=tx_ns) or stop_ref).strip()
+            lon_text = str(stop_node.findtext('tx:Location/tx:Longitude', default='', namespaces=tx_ns) or '').strip()
+            lat_text = str(stop_node.findtext('tx:Location/tx:Latitude', default='', namespaces=tx_ns) or '').strip()
+            try:
+                lon = float(lon_text)
+                lat = float(lat_text)
+            except ValueError:
+                continue
+            stops_lookup[stop_ref] = {
+                'stop_id': stop_ref,
+                'stop_code': stop_ref,
+                'stop_name': name,
+                'stop_lon': lon,
+                'stop_lat': lat,
+            }
+
+        line_name = str(root.findtext('.//tx:Lines/tx:Line/tx:LineName', default='', namespaces=tx_ns) or '').strip()
+        service_code = str(root.findtext('.//tx:ServiceCode', default='', namespaces=tx_ns) or '').strip()
+        route_id = service_code or line_name
+        if route_id:
+            routes.setdefault(
+                route_id,
+                {
+                    'route_id': route_id,
+                    'agency_id': GTFS_ALLOWED_AGENCY_ID or '',
+                    'route_short_name': line_name or route_id,
+                    'route_long_name': str(root.findtext('.//tx:OutboundDescription/tx:Description', default='', namespaces=tx_ns) or '').strip(),
+                },
+            )
+
+        current_sections = extract_transxchange_section_sequences(root, tx_ns)
+        for section_id, links in current_sections.items():
+            scoped_section_id = scoped(section_id)
+            scoped_links: list[dict[str, object]] = []
+            for link in links:
+                scoped_link = dict(link)
+                scoped_link['linkId'] = scoped(link.get('linkId') or '')
+                scoped_links.append(scoped_link)
+            section_links[scoped_section_id] = scoped_links
+
+        for jp in root.findall('.//tx:JourneyPattern', tx_ns):
+            raw_jp_id = str(jp.attrib.get('id') or '').strip()
+            jp_id = scoped(raw_jp_id)
+            if not jp_id:
+                continue
+            direction = str(jp.findtext('tx:Direction', default='', namespaces=tx_ns) or '').strip().lower()
+            section_refs_text = str(jp.findtext('tx:JourneyPatternSectionRefs', default='', namespaces=tx_ns) or '').strip()
+            section_refs = [scoped(value) for value in re.split(r'\s+', section_refs_text) if value]
+            jp_route_ref = str(jp.findtext('tx:RouteRef', default='', namespaces=tx_ns) or '').strip()
+            journey_patterns[jp_id] = {
+                'routeId': route_id or jp_route_ref or raw_jp_id,
+                'directionId': '1' if direction == 'outbound' else ('0' if direction == 'inbound' else ''),
+                'sectionRefs': section_refs,
+            }
+
+        for trip in root.findall('.//tx:VehicleJourney', tx_ns):
+            raw_trip_id = str(trip.findtext('tx:VehicleJourneyCode', default='', namespaces=tx_ns) or '').strip()
+            raw_jp_ref = str(trip.findtext('tx:JourneyPatternRef', default='', namespaces=tx_ns) or '').strip()
+            trip_id = scoped(raw_trip_id)
+            jp_ref = scoped(raw_jp_ref)
+            if not trip_id or not jp_ref:
+                continue
+            departure_time = str(trip.findtext('tx:DepartureTime', default='00:00:00', namespaces=tx_ns) or '00:00:00').strip()
+            service_ref = str(trip.findtext('tx:ServiceRef', default='', namespaces=tx_ns) or '').strip()
+            timing_overrides: dict[str, int] = {}
+            for link in trip.findall('tx:VehicleJourneyTimingLink', tx_ns):
+                jp_link_ref = str(link.findtext('tx:JourneyPatternTimingLinkRef', default='', namespaces=tx_ns) or '').strip()
+                run_time = str(link.findtext('tx:RunTime', default='', namespaces=tx_ns) or '').strip()
+                if jp_link_ref:
+                    timing_overrides[scoped(jp_link_ref)] = parse_iso8601_duration_seconds(run_time)
+            trips.append(
+                {
+                    'tripId': trip_id,
+                    'journeyPatternRef': jp_ref,
+                    'departureTime': departure_time,
+                    'serviceRef': service_ref or route_id or raw_jp_ref,
+                    'timingOverrides': timing_overrides,
+                }
+            )
+
+    if not routes or not trips or not stops_lookup:
+        return False
+
+    route_rows: list[dict[str, str]] = []
+    for route in routes.values():
+        route_rows.append(
+            {
+                'route_id': str(route.get('route_id') or ''),
+                'agency_id': str(route.get('agency_id') or ''),
+                'route_short_name': str(route.get('route_short_name') or ''),
+                'route_long_name': str(route.get('route_long_name') or ''),
+            }
+        )
+
+    trip_rows: list[dict[str, str]] = []
+    shape_rows: list[dict[str, str]] = []
+    stop_time_rows: list[dict[str, str]] = []
+    emitted_shape_ids: set[str] = set()
+
+    for trip in trips:
+        trip_id = str(trip.get('tripId') or '').strip()
+        jp_ref = str(trip.get('journeyPatternRef') or '').strip()
+        jp = journey_patterns.get(jp_ref)
+        if not trip_id or jp is None:
+            continue
+
+        route_id = str(jp.get('routeId') or trip.get('serviceRef') or '').strip()
+        if route_id not in routes:
+            routes[route_id] = {
+                'route_id': route_id,
+                'agency_id': GTFS_ALLOWED_AGENCY_ID or '',
+                'route_short_name': route_id,
+                'route_long_name': '',
+            }
+            route_rows.append(routes[route_id])
+
+        section_refs = list(jp.get('sectionRefs') or [])
+        links: list[dict[str, object]] = []
+        for section_ref in section_refs:
+            links.extend(section_links.get(section_ref, []))
+        if not links:
+            continue
+
+        stop_sequence_ids: list[str] = []
+        for link in links:
+            from_stop = str(link.get('fromStop') or '').strip()
+            to_stop = str(link.get('toStop') or '').strip()
+            if from_stop and (not stop_sequence_ids or stop_sequence_ids[-1] != from_stop):
+                stop_sequence_ids.append(from_stop)
+            if to_stop and (not stop_sequence_ids or stop_sequence_ids[-1] != to_stop):
+                stop_sequence_ids.append(to_stop)
+
+        coordinate_stops = [stop_id for stop_id in stop_sequence_ids if stop_id in stops_lookup]
+        if len(coordinate_stops) < 2:
+            continue
+
+        shape_id = f'shape:{jp_ref}'
+        for index, stop_id in enumerate(coordinate_stops, start=1):
+            stop = stops_lookup[stop_id]
+            shape_rows.append(
+                {
+                    'shape_id': shape_id,
+                    'shape_pt_lat': str(stop.get('stop_lat') or ''),
+                    'shape_pt_lon': str(stop.get('stop_lon') or ''),
+                    'shape_pt_sequence': str(index),
+                }
+            )
+
+        try:
+            departure_seconds = parse_gtfs_time(trip.get('departureTime')) or 0
+        except Exception:
+            departure_seconds = 0
+
+        cumulative = departure_seconds
+        stop_arrivals: list[tuple[str, int]] = []
+        if coordinate_stops:
+            stop_arrivals.append((coordinate_stops[0], cumulative))
+
+        overrides = dict(trip.get('timingOverrides') or {})
+        for link in links:
+            to_stop = str(link.get('toStop') or '').strip()
+            if not to_stop or to_stop not in stops_lookup:
+                continue
+            runtime = int(overrides.get(str(link.get('linkId') or ''), int(link.get('runtimeSeconds') or 0)))
+            cumulative += max(0, runtime)
+            if stop_arrivals and stop_arrivals[-1][0] == to_stop:
+                continue
+            stop_arrivals.append((to_stop, cumulative))
+
+        for sequence, (stop_id, seconds_value) in enumerate(stop_arrivals, start=1):
+            hhmmss = format_gtfs_hhmmss(seconds_value)
+            stop_time_rows.append(
+                {
+                    'trip_id': trip_id,
+                    'arrival_time': hhmmss,
+                    'departure_time': hhmmss,
+                    'stop_id': stop_id,
+                    'stop_sequence': str(sequence),
+                }
+            )
+
+        trip_rows.append(
+            {
+                'route_id': route_id,
+                'service_id': str(trip.get('serviceRef') or route_id),
+                'trip_id': trip_id,
+                'shape_id': shape_id,
+                'direction_id': str(jp.get('directionId') or ''),
+            }
+        )
+
+    if not trip_rows or not shape_rows:
+        return False
+
+    stops_rows = sorted(stops_lookup.values(), key=lambda row: str(row.get('stop_name') or '').lower())
+
+    def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+        with path.open('w', encoding='utf-8', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({name: row.get(name, '') for name in fieldnames})
+
+    write_csv(extracted_dir / 'routes.txt', ['route_id', 'agency_id', 'route_short_name', 'route_long_name'], route_rows)
+    write_csv(extracted_dir / 'trips.txt', ['route_id', 'service_id', 'trip_id', 'shape_id', 'direction_id'], trip_rows)
+    write_csv(extracted_dir / 'shapes.txt', ['shape_id', 'shape_pt_lat', 'shape_pt_lon', 'shape_pt_sequence'], shape_rows)
+    write_csv(extracted_dir / 'stops.txt', ['stop_id', 'stop_code', 'stop_name', 'stop_lat', 'stop_lon'], stops_rows)
+    write_csv(extracted_dir / 'stop_times.txt', ['trip_id', 'arrival_time', 'departure_time', 'stop_id', 'stop_sequence'], stop_time_rows)
+
+    return True
+
+
+def parse_gtfs_routes_from_directory(extracted_dir: Path, allowed_route_prefixes: list[str] | None = None) -> dict[str, object]:
     routes_path = find_gtfs_file(extracted_dir, 'routes.txt')
     trips_path = find_gtfs_file(extracted_dir, 'trips.txt')
     shapes_path = find_gtfs_file(extracted_dir, 'shapes.txt')
@@ -2214,6 +2887,9 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
     route_rows = read_gtfs_rows(routes_path)
     trip_rows = read_gtfs_rows(trips_path)
     shape_rows = read_gtfs_rows(shapes_path)
+    source_xml_file_count = len([path for path in extracted_dir.rglob('*.xml') if path.is_file()])
+
+    normalized_allowed_prefixes = {extract_route_prefix(value) for value in (allowed_route_prefixes or []) if extract_route_prefix(value)}
 
     route_meta: dict[str, dict[str, str]] = {}
     for row in route_rows:
@@ -2223,6 +2899,9 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             continue
         if GTFS_ALLOWED_AGENCY_ID and agency_id != GTFS_ALLOWED_AGENCY_ID:
             continue
+        route_prefix = extract_route_prefix(route_id)
+        if normalized_allowed_prefixes and route_prefix not in normalized_allowed_prefixes:
+            continue
         route_meta[route_id] = {
             'shortName': str(row.get('route_short_name') or '').strip(),
             'longName': str(row.get('route_long_name') or '').strip(),
@@ -2230,6 +2909,9 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
 
     if GTFS_ALLOWED_AGENCY_ID and not route_meta:
         raise ValueError(f'No routes found for agency ID {GTFS_ALLOWED_AGENCY_ID} in this GTFS ZIP.')
+    if normalized_allowed_prefixes and not route_meta:
+        labels = ', '.join(sorted(normalized_allowed_prefixes))
+        raise ValueError(f'No routes found for configured route prefixes: {labels}.')
 
     allowed_route_ids = set(route_meta.keys())
 
@@ -2521,6 +3203,8 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path) -> dict[str, object]:
             'type': 'FeatureCollection',
             'features': features,
         },
+        'xmlSourceFileCount': source_xml_file_count,
+        'sourceRouteRowCount': len(route_rows),
     }
 
 
@@ -2565,9 +3249,251 @@ def save_gtfs_data(zip_bytes: bytes, parsed: dict[str, object], original_filenam
         'tripSchedules': parsed.get('tripSchedules', {}),
         'serviceCalendar': parsed.get('serviceCalendar', {}),
         'featureCollection': parsed['featureCollection'],
+        'xmlSourceFileCount': int(parsed.get('xmlSourceFileCount', 0) or 0),
+        'sourceRouteRowCount': int(parsed.get('sourceRouteRowCount', 0) or 0),
     }
     GTFS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
     return payload
+
+
+def load_data_health_status() -> dict[str, object]:
+    if not DATA_HEALTH_STATUS_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(DATA_HEALTH_STATUS_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def save_data_health_status(payload: dict[str, object]) -> None:
+    DATA_HEALTH_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DATA_HEALTH_STATUS_PATH.write_text(json.dumps(payload), encoding='utf-8')
+
+
+def load_gtfs_manual_lock_state() -> bool:
+    if not GTFS_MANUAL_LOCK_PATH.exists():
+        return True
+    try:
+        payload = json.loads(GTFS_MANUAL_LOCK_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    return bool(payload.get('enabled', True))
+
+
+def save_gtfs_manual_lock_state(enabled: bool) -> bool:
+    GTFS_MANUAL_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {'enabled': bool(enabled), 'updatedAt': datetime.now(timezone.utc).isoformat()}
+    GTFS_MANUAL_LOCK_PATH.write_text(json.dumps(payload), encoding='utf-8')
+    return bool(payload['enabled'])
+
+
+def maybe_auto_refresh_data_health_status() -> None:
+    global _last_data_health_run_monotonic
+    now = time.monotonic()
+    if (now - _last_data_health_run_monotonic) < 30:
+        return
+    _last_data_health_run_monotonic = now
+    try:
+        get_data_health_status(force=False)
+    except Exception:
+        return
+
+
+
+def get_contacts_encryption_status() -> dict[str, object]:
+    rows = get_db().execute(
+        '''
+        SELECT id, first_name, last_name, job_role, job_title, depot_location, phone_number
+        FROM contacts
+        '''
+    ).fetchall()
+
+    total_contacts = len(rows)
+    fully_encrypted = 0
+    partially_encrypted = 0
+    plaintext_rows = 0
+
+    for row in rows:
+        values = [
+            row['first_name'],
+            row['last_name'],
+            row['job_role'],
+            row['job_title'],
+            row['depot_location'],
+            row['phone_number'],
+        ]
+        encrypted_flags = [is_encrypted_contact_value(value) for value in values]
+        encrypted_count = sum(1 for flag in encrypted_flags if flag)
+
+        if encrypted_count == len(values):
+            fully_encrypted += 1
+        elif encrypted_count == 0:
+            plaintext_rows += 1
+        else:
+            partially_encrypted += 1
+
+    encrypted_percentage = (fully_encrypted / total_contacts * 100.0) if total_contacts else 100.0
+    return {
+        'totalContacts': total_contacts,
+        'fullyEncryptedContacts': fully_encrypted,
+        'partiallyEncryptedContacts': partially_encrypted,
+        'plaintextContacts': plaintext_rows,
+        'encryptedPercentage': round(encrypted_percentage, 1),
+        'allEncrypted': total_contacts == fully_encrypted,
+        'checkedAt': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_data_health_status(force: bool = False) -> dict[str, object]:
+    previous_status = load_data_health_status()
+    now = datetime.now(timezone.utc)
+    last_check = parse_session_timestamp(previous_status.get('lastCheckAt'))
+    if not force and last_check is not None:
+        if (now - last_check).total_seconds() < max(60, AUTO_DATA_CHECK_INTERVAL_SECONDS):
+            return previous_status
+
+    status = {
+        'lastCheckAt': now.isoformat(),
+        'gtfs': {
+            'configured': False,
+            'active': False,
+            'ok': False,
+            'routeCount': 0,
+            'message': 'No GTFS ZIP uploaded yet.',
+            'lastCheckedAt': now.isoformat(),
+            'manualLockEnabled': load_gtfs_manual_lock_state(),
+        },
+        'bods': {
+            'configured': False,
+            'active': False,
+            'ok': False,
+            'vehicleCount': 0,
+            'message': 'BODS feed is not configured.',
+            'lastCheckedAt': now.isoformat(),
+        },
+    }
+
+    gtfs_block = status['gtfs']
+    cache = load_gtfs_cache(allow_rebuild=False)
+    route_prefix_filter = GTFS_ALLOWED_ROUTE_PREFIXES or extract_route_prefixes_from_cache(cache)
+    if cache is not None:
+        route_count = int(cache.get('routeCount', 0))
+        gtfs_block.update(
+            {
+                'configured': True,
+                'active': bool(route_count > 0 and GTFS_UPLOAD_PATH.exists()),
+                'ok': bool(route_count > 0),
+                'routeCount': route_count,
+                'originalFilename': str(cache.get('originalFilename') or ''),
+                'uploadedAt': str(cache.get('uploadedAt') or ''),
+                'message': 'GTFS cache is active.' if route_count > 0 else 'GTFS cache exists but no routes were detected.',
+                'routePrefixFilter': route_prefix_filter,
+            }
+        )
+
+    manual_lock_enabled = load_gtfs_manual_lock_state()
+    gtfs_block['manualLockEnabled'] = manual_lock_enabled
+
+    auto_download_url = GTFS_AUTO_DOWNLOAD_URL
+    source_label = 'configured URL'
+    dataset_meta: dict[str, object] | None = None
+    if not auto_download_url:
+        auto_download_url, dataset_meta = get_latest_bods_timetable_dataset_download_url()
+        source_label = f'BODS dataset (NOC {BODS_TIMETABLE_NOC})'
+
+    if manual_lock_enabled:
+        gtfs_block['autoUpdateMessage'] = 'Manual upload lock is enabled. Auto-download updates are paused.'
+    elif auto_download_url:
+        try:
+            with urlopen(auto_download_url, timeout=GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS) as response:
+                auto_bytes = response.read()
+            latest_hash = hashlib.sha256(auto_bytes).hexdigest()
+            current_hash = ''
+            if GTFS_UPLOAD_PATH.exists():
+                current_hash = hashlib.sha256(GTFS_UPLOAD_PATH.read_bytes()).hexdigest()
+            if latest_hash != current_hash:
+                extracted_dir = unzip_gtfs_archive(auto_bytes)
+                effective_route_prefix_filter = list(route_prefix_filter)
+                if BODS_TIMETABLE_NOC == 'BNGN' and not GTFS_AUTO_DOWNLOAD_URL:
+                    detected_prefix = detect_best_pc_route_prefix(extracted_dir)
+                    if detected_prefix:
+                        effective_route_prefix_filter = [detected_prefix]
+
+                parsed = parse_gtfs_routes_from_directory(
+                    extracted_dir,
+                    allowed_route_prefixes=effective_route_prefix_filter,
+                )
+                source_name = 'auto-download-gtfs.zip'
+                if dataset_meta and dataset_meta.get('id'):
+                    source_name = f"bods-dataset-{dataset_meta.get('id')}.zip"
+                saved = save_gtfs_data(auto_bytes, parsed, source_name)
+                gtfs_block.update(
+                    {
+                        'configured': True,
+                        'active': True,
+                        'ok': True,
+                        'routeCount': int(saved.get('routeCount', 0)),
+                        'originalFilename': str(saved.get('originalFilename') or ''),
+                        'uploadedAt': str(saved.get('uploadedAt') or ''),
+                        'lastDownloadAt': now.isoformat(),
+                        'message': f'GTFS auto-download updated successfully from {source_label}.',
+                        'convertedFileLimit': TRANSXCHANGE_MAX_FILES,
+                        'convertedTripLimit': TRANSXCHANGE_MAX_TRIPS,
+                        'routePrefixFilter': effective_route_prefix_filter,
+                    }
+                )
+            else:
+                gtfs_block['lastDownloadAt'] = str(status.get('gtfs', {}).get('lastDownloadAt') or '')
+                gtfs_block['autoUpdateMessage'] = f'GTFS auto-download checked with no changes from {source_label}.'
+                gtfs_block['convertedFileLimit'] = TRANSXCHANGE_MAX_FILES
+                gtfs_block['convertedTripLimit'] = TRANSXCHANGE_MAX_TRIPS
+                gtfs_block['routePrefixFilter'] = route_prefix_filter
+        except Exception as error:
+            gtfs_block['autoUpdateMessage'] = f'GTFS auto-download check failed from {source_label}: {error}'
+            gtfs_block['convertedFileLimit'] = TRANSXCHANGE_MAX_FILES
+            gtfs_block['convertedTripLimit'] = TRANSXCHANGE_MAX_TRIPS
+            gtfs_block['routePrefixFilter'] = route_prefix_filter
+    elif not GTFS_AUTO_DOWNLOAD_URL:
+        gtfs_block['autoUpdateMessage'] = f'No published BODS timetable ZIP found for NOC {BODS_TIMETABLE_NOC}.'
+
+    feed_url = get_bods_feed_url()
+    bods_block = status['bods']
+    if feed_url:
+        bods_block['configured'] = True
+        try:
+            vehicles, source_timestamp = fetch_bods_vehicles_cached()
+            vehicle_count = len(vehicles)
+            bods_block.update(
+                {
+                    'ok': True,
+                    'active': vehicle_count > 0,
+                    'vehicleCount': vehicle_count,
+                    'sourceTimestamp': source_timestamp,
+                    'message': 'BODS feed reachable.' if vehicle_count > 0 else 'BODS feed reachable but returned no active vehicles.',
+                }
+            )
+            if vehicle_count > 0:
+                bods_block['lastSuccessfulAt'] = now.isoformat()
+            elif previous_status.get('bods', {}).get('lastSuccessfulAt'):
+                bods_block['lastSuccessfulAt'] = str(previous_status.get('bods', {}).get('lastSuccessfulAt'))
+        except Exception as error:
+            bods_block.update(
+                {
+                    'ok': False,
+                    'active': False,
+                    'message': f'BODS feed check failed: {error}',
+                }
+            )
+
+    if previous_status.get('bods', {}).get('lastSuccessfulAt') and not status['bods'].get('lastSuccessfulAt'):
+        status['bods']['lastSuccessfulAt'] = str(previous_status.get('bods', {}).get('lastSuccessfulAt'))
+    save_data_health_status(status)
+    return status
 
 
 def filter_route_features(cache: dict[str, object], selected_route: str, selected_direction: str) -> dict[str, object]:
@@ -2592,8 +3518,10 @@ def filter_route_features(cache: dict[str, object], selected_route: str, selecte
 
 
 @app.get('/api/gtfs/status')
-@login_required('user_management')
+@login_required('admin_privileges')
 def gtfs_status():
+    force = str(request.args.get('force', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    status = get_data_health_status(force=force)
     cache = load_gtfs_cache(allow_rebuild=False)
     if cache is None:
         return jsonify(
@@ -2602,6 +3530,7 @@ def gtfs_status():
                 'configured': False,
                 'message': 'No GTFS ZIP uploaded yet.',
                 'routeCount': 0,
+                'healthStatus': status,
             }
         )
 
@@ -2612,12 +3541,49 @@ def gtfs_status():
             'uploadedAt': cache.get('uploadedAt', ''),
             'originalFilename': cache.get('originalFilename', ''),
             'routeCount': int(cache.get('routeCount', 0)),
+            'xmlSourceFileCount': int(cache.get('xmlSourceFileCount', 0) or 0),
+            'sourceRouteRowCount': int(cache.get('sourceRouteRowCount', 0) or 0),
+            'manualLockEnabled': load_gtfs_manual_lock_state(),
+            'healthStatus': status,
         }
     )
 
 
+
+@app.get('/api/admin/contacts-encryption-status')
+@login_required('admin_privileges')
+def admin_contacts_encryption_status():
+    status = get_contacts_encryption_status()
+    return jsonify({'ok': True, 'status': status})
+
+
+@app.get('/api/admin/data-status')
+@login_required('admin_privileges')
+def admin_data_status():
+    force = str(request.args.get('force', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    return jsonify({'ok': True, 'status': get_data_health_status(force=force)})
+
+
+
+
+@app.route('/api/admin/gtfs-manual-lock', methods=['GET', 'POST'])
+@login_required('admin_privileges')
+def admin_gtfs_manual_lock():
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'enabled': load_gtfs_manual_lock_state()})
+
+    payload = request.get_json(silent=True)
+    enabled = bool((payload or {}).get('enabled', True))
+    saved = save_gtfs_manual_lock_state(enabled)
+    return jsonify({
+        'ok': True,
+        'enabled': saved,
+        'message': 'Manual GTFS lock enabled.' if saved else 'Manual GTFS lock disabled.',
+    })
+
+
 @app.post('/api/gtfs/upload')
-@login_required('user_management')
+@login_required('admin_privileges')
 def upload_gtfs():
     file = request.files.get('gtfsZipFile')
     if file is None or not file.filename:
@@ -2687,12 +3653,12 @@ def tracking_static_routes():
 
 
 @app.get('/api/tracking/vehicles')
-@login_required('tracking')
+@login_required_any(('tracking', 'service_overview'))
 def tracking_vehicles():
     cache = ensure_gtfs_cache_stops(load_gtfs_cache(allow_rebuild=False))
 
     try:
-        vehicles, source_timestamp = fetch_bods_vehicles()
+        vehicles, source_timestamp = fetch_bods_vehicles_cached()
     except Exception:
         vehicles = []
         source_timestamp = ''
@@ -2701,7 +3667,7 @@ def tracking_vehicles():
         return jsonify(
             {
                 'ok': True,
-                'message': 'No live vehicle feed is available right now. Upload a timetable ZIP in Users to enable timetable-based tracking.',
+                'message': 'No live vehicle feed is available right now. Upload a timetable ZIP in Admin to enable timetable-based tracking.',
                 'vehicles': [],
                 'sourceTimestamp': source_timestamp or None,
                 'refreshedAt': datetime.now(timezone.utc).isoformat(),
@@ -2769,7 +3735,7 @@ def tracking_stop_details(stop_id: str):
         return jsonify({'ok': False, 'message': 'Stop not found.'}), 404
 
     try:
-        raw_vehicles, _ = fetch_bods_vehicles()
+        raw_vehicles, _ = fetch_bods_vehicles_cached()
     except Exception:
         raw_vehicles = []
     live_vehicles = enrich_tracking_vehicles(raw_vehicles, cache) if raw_vehicles else []
@@ -2968,14 +3934,243 @@ def create_driving_snapshot():
     )
 
 
-@app.get('/users')
-@login_required('user_management')
-def users_page():
+@app.get('/admin')
+@login_required('admin_privileges')
+def admin_page():
     return render_template('users.html')
 
 
+@app.get('/users')
+@login_required('admin_privileges')
+def users_page():
+    return redirect(url_for('admin_page'))
+
+
+
+@app.get('/api/contacts')
+@login_required('contacts')
+def list_contacts():
+    query = str(request.args.get('q', '')).strip().lower()
+    normalized_query = re.sub(r'[^0-9]', '', query)
+    rows = get_db().execute(
+        '''
+        SELECT id, first_name, last_name, job_role, job_title, depot_location, phone_number,
+               is_important, is_private, created_at
+        FROM contacts
+        ORDER BY id ASC
+        '''
+    ).fetchall()
+
+    contacts: list[dict[str, object]] = []
+    for row in rows:
+        first_name_plain = decrypt_contact_value(row['first_name']).strip()
+        last_name_plain = decrypt_contact_value(row['last_name']).strip()
+        job_role_plain = decrypt_contact_value(row['job_role']).strip()
+        job_title_plain = decrypt_contact_value(row['job_title']).strip()
+        depot_location_plain = decrypt_contact_value(row['depot_location']).strip()
+        phone_number_plain = decrypt_contact_value(row['phone_number']).strip()
+
+        item = {
+            'id': int(row['id']),
+            'firstName': first_name_plain,
+            'lastName': last_name_plain,
+            'fullName': f"{first_name_plain} {last_name_plain}".strip(),
+            'jobRole': job_role_plain,
+            'jobTitle': job_title_plain,
+            'depotLocation': depot_location_plain,
+            'phoneNumber': phone_number_plain,
+            'isImportant': bool(row['is_important']),
+            'isPrivate': bool(row['is_private']),
+            'createdAt': row['created_at'],
+        }
+
+        if query:
+            text_match = (
+                query in item['fullName'].lower()
+                or query in item['jobRole'].lower()
+                or query in item['jobTitle'].lower()
+                or query in item['depotLocation'].lower()
+            )
+            normalized_phone = re.sub(r'[^0-9]', '', item['phoneNumber'])
+            phone_match = bool(normalized_query) and normalized_query in normalized_phone
+            if not (text_match or phone_match):
+                continue
+
+        contacts.append(item)
+
+    return jsonify({'ok': True, 'contacts': contacts, 'count': len(contacts)})
+
+
+@app.post('/api/contacts')
+@login_required('admin_privileges')
+def create_contact():
+    actor = get_current_user()
+    payload = request.get_json(silent=True) or {}
+
+    first_name = str(payload.get('firstName', '')).strip()
+    last_name = str(payload.get('lastName', '')).strip()
+    job_role = str(payload.get('jobRole', '')).strip()
+    job_title = str(payload.get('jobTitle', '')).strip()
+    depot_location = str(payload.get('depotLocation', '')).strip()
+    phone_number = str(payload.get('phoneNumber', '')).strip()
+    is_important = bool(payload.get('isImportant', False))
+    is_private = bool(payload.get('isPrivate', False))
+    force_save_duplicate = bool(payload.get('forceSaveDuplicate', False))
+
+    if not first_name or not last_name or not job_role or not depot_location or not phone_number:
+        return jsonify({'ok': False, 'message': 'First name, last name, job, depot/location, and phone number are required.'}), 400
+
+    if not job_title:
+        job_title = job_role
+
+    phone_digits = re.sub(r'[^0-9+]', '', phone_number)
+    normalized_phone = re.sub(r'[^0-9]', '', phone_digits)
+    if len(normalized_phone) < 7:
+        return jsonify({'ok': False, 'message': 'Provide a valid phone number.'}), 400
+
+    normalized_name = f"{first_name} {last_name}".strip().lower()
+    database = get_db()
+    duplicate_rows = database.execute(
+        '''
+        SELECT id, first_name, last_name, phone_number
+        FROM contacts
+        '''
+    ).fetchall()
+
+    duplicates: list[dict[str, object]] = []
+    for row in duplicate_rows:
+        existing_first_name = decrypt_contact_value(row['first_name']).strip()
+        existing_last_name = decrypt_contact_value(row['last_name']).strip()
+        existing_name = f"{existing_first_name} {existing_last_name}".strip().lower()
+        existing_phone = re.sub(r'[^0-9]', '', decrypt_contact_value(row['phone_number']).strip())
+        name_match = bool(normalized_name) and normalized_name == existing_name
+        phone_match = bool(normalized_phone) and normalized_phone == existing_phone
+        if not (name_match or phone_match):
+            continue
+        duplicates.append(
+            {
+                'id': int(row['id']),
+                'fullName': f"{existing_first_name} {existing_last_name}".strip(),
+                'phoneNumber': decrypt_contact_value(row['phone_number']).strip(),
+                'matchedBy': 'name and phone' if name_match and phone_match else ('name' if name_match else 'phone'),
+            }
+        )
+
+    if duplicates and not force_save_duplicate:
+        preview = ', '.join(
+            f"{item['fullName'] or 'Unknown'} ({item['matchedBy']})"
+            for item in duplicates[:3]
+        )
+        more_count = max(0, len(duplicates) - 3)
+        suffix = f" plus {more_count} more" if more_count else ''
+        return jsonify(
+            {
+                'ok': False,
+                'duplicate': True,
+                'message': f"Possible duplicate contact found: {preview}{suffix}. Save anyway?",
+                'duplicates': duplicates,
+            }
+        ), 409
+
+    cursor = database.execute(
+        '''
+        INSERT INTO contacts (
+            first_name, last_name, job_role, job_title, depot_location, phone_number,
+            is_important, is_private, created_by_user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            encrypt_contact_value(first_name),
+            encrypt_contact_value(last_name),
+            encrypt_contact_value(job_role),
+            encrypt_contact_value(job_title),
+            encrypt_contact_value(depot_location),
+            encrypt_contact_value(phone_number),
+            int(is_important),
+            int(is_private),
+            int(actor['id']) if actor else None,
+        ),
+    )
+    database.commit()
+
+    return jsonify({'ok': True, 'contactId': cursor.lastrowid})
+
+
+
+@app.patch('/api/contacts/<int:contact_id>')
+@login_required('admin_privileges')
+def update_contact(contact_id: int):
+    payload = request.get_json(silent=True) or {}
+
+    first_name = str(payload.get('firstName', '')).strip()
+    last_name = str(payload.get('lastName', '')).strip()
+    job_role = str(payload.get('jobRole', '')).strip()
+    job_title = str(payload.get('jobTitle', '')).strip()
+    depot_location = str(payload.get('depotLocation', '')).strip()
+    phone_number = str(payload.get('phoneNumber', '')).strip()
+    is_important = bool(payload.get('isImportant', False))
+    is_private = bool(payload.get('isPrivate', False))
+
+    if not first_name or not last_name or not job_role or not depot_location or not phone_number:
+        return jsonify({'ok': False, 'message': 'First name, last name, job, depot/location, and phone number are required.'}), 400
+
+    if not job_title:
+        job_title = job_role
+
+    phone_digits = re.sub(r'[^0-9+]', '', phone_number)
+    if len(re.sub(r'[^0-9]', '', phone_digits)) < 7:
+        return jsonify({'ok': False, 'message': 'Provide a valid phone number.'}), 400
+
+    database = get_db()
+    existing = database.execute('SELECT id FROM contacts WHERE id = ?', (contact_id,)).fetchone()
+    if existing is None:
+        return jsonify({'ok': False, 'message': 'Contact not found.'}), 404
+
+    database.execute(
+        '''
+        UPDATE contacts
+        SET first_name = ?,
+            last_name = ?,
+            job_role = ?,
+            job_title = ?,
+            depot_location = ?,
+            phone_number = ?,
+            is_important = ?,
+            is_private = ?
+        WHERE id = ?
+        ''',
+        (
+            encrypt_contact_value(first_name),
+            encrypt_contact_value(last_name),
+            encrypt_contact_value(job_role),
+            encrypt_contact_value(job_title),
+            encrypt_contact_value(depot_location),
+            encrypt_contact_value(phone_number),
+            int(is_important),
+            int(is_private),
+            contact_id,
+        ),
+    )
+    database.commit()
+    return jsonify({'ok': True, 'contactId': contact_id})
+
+
+
+@app.delete('/api/contacts/<int:contact_id>')
+@login_required('admin_privileges')
+def delete_contact(contact_id: int):
+    database = get_db()
+    existing = database.execute('SELECT id FROM contacts WHERE id = ?', (contact_id,)).fetchone()
+    if existing is None:
+        return jsonify({'ok': False, 'message': 'Contact not found.'}), 404
+
+    database.execute('DELETE FROM contacts WHERE id = ?', (contact_id,))
+    database.commit()
+    return jsonify({'ok': True, 'contactId': contact_id})
+
+
 @app.get('/api/users')
-@login_required('user_management')
+@login_required('admin_privileges')
 def list_users():
     database = get_db()
     rows = database.execute(
@@ -2997,7 +4192,7 @@ def list_users():
 
 
 @app.post('/api/users')
-@login_required('user_management')
+@login_required('admin_privileges')
 def create_user():
     actor = get_current_user()
     if actor is None:
@@ -3022,10 +4217,15 @@ def create_user():
     user_id = cursor.lastrowid
 
     actor_can_grant_admin = bool(actor['is_superadmin']) or actor['permissions'].get('admin_privileges')
+    requested_admin = bool(requested_permissions.get('admin_privileges', False))
+    grant_all_permissions = requested_admin and actor_can_grant_admin
+
     for permission_key in PERMISSIONS:
         enabled = bool(requested_permissions.get(permission_key, False))
         if permission_key == 'admin_privileges' and not actor_can_grant_admin:
             enabled = False
+        elif grant_all_permissions:
+            enabled = True
         database.execute(
             'INSERT INTO permissions (user_id, permission_key, enabled) VALUES (?, ?, ?)',
             (user_id, permission_key, int(enabled)),
@@ -3035,7 +4235,7 @@ def create_user():
 
 
 @app.delete('/api/users/<int:user_id>')
-@login_required('user_management')
+@login_required('admin_privileges')
 def delete_user(user_id: int):
     actor = get_current_user()
     if actor is None:
@@ -3056,7 +4256,7 @@ def delete_user(user_id: int):
 
 
 @app.post('/api/users/<int:user_id>/sessions/force-logout')
-@login_required('user_management')
+@login_required('admin_privileges')
 def force_logout_user_sessions(user_id: int):
     actor = get_current_user()
     if actor is None:
@@ -3075,7 +4275,7 @@ def force_logout_user_sessions(user_id: int):
 
 
 @app.post('/api/users/<int:user_id>/password-reset')
-@login_required('user_management')
+@login_required('admin_privileges')
 def force_password_reset(user_id: int):
     actor = get_current_user()
     if actor is None:
@@ -3095,7 +4295,7 @@ def force_password_reset(user_id: int):
 
 
 @app.patch('/api/users/<int:user_id>/permissions')
-@login_required('user_management')
+@login_required('admin_privileges')
 def update_permissions(user_id: int):
     actor = get_current_user()
     if actor is None:
@@ -3117,14 +4317,25 @@ def update_permissions(user_id: int):
         return jsonify({'ok': False, 'message': 'Only admins can change admin privileges.'}), 403
 
     database = get_db()
-    database.execute(
-        '''
-        INSERT INTO permissions (user_id, permission_key, enabled)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id, permission_key) DO UPDATE SET enabled = excluded.enabled
-        ''',
-        (user_id, permission_key, int(enabled)),
-    )
+    if permission_key == 'admin_privileges' and enabled:
+        for key in PERMISSIONS:
+            database.execute(
+                '''
+                INSERT INTO permissions (user_id, permission_key, enabled)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, permission_key) DO UPDATE SET enabled = 1
+                ''',
+                (user_id, key),
+            )
+    else:
+        database.execute(
+            '''
+            INSERT INTO permissions (user_id, permission_key, enabled)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, permission_key) DO UPDATE SET enabled = excluded.enabled
+            ''',
+            (user_id, permission_key, int(enabled)),
+        )
     database.commit()
     return jsonify({'ok': True})
 

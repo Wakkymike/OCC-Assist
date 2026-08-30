@@ -40,7 +40,7 @@
             <label class="compact-field" for="static-route-select">
               <span>Select route</span>
               <select id="static-route-select" disabled>
-                <option value="all">All uploaded routes</option>
+                <option value="">Select a service to display</option>
               </select>
             </label>
             <label class="compact-field" for="static-direction-select">
@@ -52,12 +52,12 @@
               </select>
             </label>
             <p id="map-route-status" class="map-route-status" aria-live="polite"></p>
+            <div class="tracking-toolbar-meta">
+              <p class="map-note">Live BODS vehicle positions refresh every 7 seconds.</p>
+              <p id="map-status" class="map-status" aria-live="polite"></p>
+            </div>
           </section>
 
-          <div class="map-meta">
-            <p class="map-note">Live BODS vehicle positions refresh every 7 seconds.</p>
-            <p id="map-status" class="map-status" aria-live="polite"></p>
-          </div>
         </div>
       </section>
 
@@ -65,6 +65,24 @@
         <div class="tracking-sidebar-empty" id="tracking-sidebar-empty">
           Select a bus marker to inspect its service details.
         </div>
+
+        <section class="tracking-sidebar-controls" aria-label="Vehicle search and follow">
+          <label class="compact-field" for="tracking-search-type">
+            <span>Search by</span>
+            <select id="tracking-search-type">
+              <option value="fleetNumber">Fleet number</option>
+              <option value="runningBoard">Running board</option>
+            </select>
+          </label>
+          <label class="compact-field" for="tracking-search-query">
+            <span>Find vehicle</span>
+            <input id="tracking-search-query" type="text" placeholder="Type fleet or board number" autocomplete="off" />
+          </label>
+          <div class="tracking-sidebar-actions">
+            <button type="button" id="tracking-search-submit" class="btn secondary compact">Search</button>
+            <button type="button" id="tracking-follow-toggle" class="btn secondary compact" aria-pressed="false">Follow vehicle</button>
+          </div>
+        </section>
         <article class="tracking-sidebar-panel" id="tracking-sidebar-panel" hidden>
           <div class="section-row">
             <div>

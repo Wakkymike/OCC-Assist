@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block title %}Contacts{% endblock %}
+
+{% block content %}
+  <section class="content-panel fullwidth contacts-panel" id="contacts-app">
+    <div class="panel-head contacts-head">
+      <div>
+        <p class="brand-subtitle">Operational directory</p>
+        <h1>Contacts</h1>
+        <p class="section-copy contacts-copy">Search and browse internal contacts by name, job, title, depot/location, or phone number.</p>
+      </div>
+    </div>
+
+    <section class="contacts-search-shell" aria-label="Contact search">
+      <label class="field" for="contacts-search-input">
+        <span>Search contacts</span>
+        <input id="contacts-search-input" type="text" placeholder="Name, role, title, location, or phone number" autocomplete="off" />
+      </label>
+      <p id="contacts-search-meta" class="map-note">Type to filter the directory.</p>
+      <div id="contacts-message" class="message" aria-live="polite"></div>
+    </section>
+
+    <section id="contacts-list" class="contacts-rolodex" aria-live="polite"></section>
+  </section>
+{% endblock %}

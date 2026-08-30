@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{% block title %}OCC Assist{% endblock %}</title>
+    
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+      <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
     {% block head_extras %}{% endblock %}
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=static_version) }}" />
     <script>
@@ -19,9 +22,14 @@
         trackingStopsUrl: {{ tracking_stops_url | tojson }},
         trackingStaticRoutesUrl: {{ url_for('tracking_static_routes') | tojson }},
         serviceOverviewUrl: {{ service_overview_url | tojson }},
+        contactsApiUrl: {{ url_for('list_contacts') | tojson }},
+        createContactUrl: {{ url_for('create_contact') | tojson }},
         drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }},
         gtfsStatusUrl: {{ url_for('gtfs_status') | tojson }},
         gtfsUploadUrl: {{ url_for('upload_gtfs') | tojson }},
+        gtfsManualLockUrl: {{ (admin_gtfs_manual_lock_url | default('', true)) | tojson }},
+        adminDataStatusUrl: {{ (admin_data_status_url | default('', true)) | tojson }},
+        contactsEncryptionStatusUrl: {{ (admin_contacts_encryption_status_url | default('', true)) | tojson }},
         settingsRotacloudUrl: {{ url_for('get_rotacloud_setting') | tojson }},
         updateSettingsRotacloudUrl: {{ url_for('update_rotacloud_setting') | tojson }},
         overviewShiftsUrl: {{ url_for('daily_overview_shifts') | tojson }},
@@ -44,13 +52,18 @@
           <a href="{{ url_for('google_calendar_page') }}">Calendar</a>
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
+          {% endif %}
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.service_overview %}
             <a href="{{ url_for('service_overview') }}">Service Overview</a>
+          {% endif %}
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.contacts %}
+            <a href="{{ url_for('contacts_page') }}">Contacts</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.driving_hours %}
             <a href="{{ url_for('driving_hours') }}">Driving Hours</a>
           {% endif %}
-          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.user_management %}
-            <a href="{{ url_for('users_page') }}">Users</a>
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges %}
+            <a href="{{ url_for('admin_page') }}">Admin</a>
           {% endif %}
         </nav>
         <a class="settings-cog" href="{{ url_for('settings_page') }}" aria-label="Settings" title="Settings">&#9881;</a>

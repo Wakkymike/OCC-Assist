@@ -75,13 +75,13 @@
         <p class="section-copy">Live service status and route activity can be reviewed from the service overview page.</p>
       </section>
 
-      {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.user_management %}
+      {% if current_user.is_superadmin or current_user.permissions.admin_privileges %}
       <section class="overview-upcoming" aria-label="Admin access">
         <div class="section-row">
           <h2>Admin</h2>
-          <a class="btn secondary compact" href="{{ url_for('users_page') }}">Open User Management</a>
+          <a class="btn secondary compact" href="{{ url_for('admin_page') }}">Open Admin</a>
         </div>
-        <p class="section-copy">Manage user access, permissions, and system administration settings from here.</p>
+        <p class="section-copy">Manage user access, permissions, and system administration settings from Admin.</p>
       </section>
       {% endif %}
     </section>
