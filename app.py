@@ -2287,23 +2287,48 @@ def index_live_vehicles_for_stop(live_vehicles: list[dict[str, object]]) -> dict
     return index
 
 
+def vehicle_matches_trip_service(
+    vehicle: dict[str, object],
+    schedule: dict[str, object],
+    scheduled_arrival: dict[str, object],
+    route_labels: dict[str, str],
+) -> bool:
+    """Journey codes repeat across services, so line and direction must agree as well."""
+    if not isinstance(vehicle, dict):
+        return False
+
+    route_id = str(schedule.get('routeId') or scheduled_arrival.get('routeId') or '').strip()
+    expected_line = normalize_tracking_key(str(route_labels.get(route_id) or '').strip())
+    vehicle_line = normalize_tracking_key(str(vehicle.get('service') or vehicle.get('routeLabel') or '').strip())
+    if expected_line and vehicle_line and expected_line != vehicle_line:
+        return False
+
+    schedule_direction = normalize_gtfs_direction(str(schedule.get('direction') or scheduled_arrival.get('direction') or ''))
+    vehicle_direction = normalize_gtfs_direction(str(vehicle.get('direction') or ''))
+    if schedule_direction != 'unknown' and vehicle_direction != 'unknown' and schedule_direction != vehicle_direction:
+        return False
+
+    return True
+
+
 def match_live_vehicle_to_trip(
     scheduled_arrival: dict[str, object],
     schedule: dict[str, object],
     vehicles_by_board: dict[str, dict[str, object]],
     live_vehicles: list[dict[str, object]],
     reference_now: datetime,
+    route_labels: dict[str, str] | None = None,
 ) -> dict[str, object] | None:
-    board_key = normalize_tracking_key(str(schedule.get('blockId') or ''))
-    if board_key and board_key in vehicles_by_board:
-        return vehicles_by_board[board_key]
+    labels = route_labels or {}
 
-    trip_key = normalize_tracking_key(str(scheduled_arrival.get('tripId') or ''))
-    if trip_key and trip_key in vehicles_by_board:
-        return vehicles_by_board[trip_key]
+    for key in (
+        normalize_tracking_key(str(schedule.get('blockId') or '')),
+        normalize_tracking_key(str(scheduled_arrival.get('tripId') or '')),
+    ):
+        candidate = vehicles_by_board.get(key) if key else None
+        if isinstance(candidate, dict) and vehicle_matches_trip_service(candidate, schedule, scheduled_arrival, labels):
+            return candidate
 
-    route_key = normalize_tracking_key(str(schedule.get('routeId') or scheduled_arrival.get('routeId') or ''))
-    direction = normalize_gtfs_direction(str(schedule.get('direction') or ''))
     origin_time = str(scheduled_arrival.get('originDepartureTime') or '').strip()
     if not origin_time:
         return None
@@ -2316,11 +2341,7 @@ def match_live_vehicle_to_trip(
     for vehicle in live_vehicles or []:
         if not isinstance(vehicle, dict):
             continue
-        vehicle_route_key = normalize_tracking_key(str(vehicle.get('service') or vehicle.get('routeId') or ''))
-        if route_key and vehicle_route_key and route_key != vehicle_route_key:
-            continue
-        vehicle_direction = normalize_gtfs_direction(str(vehicle.get('direction') or ''))
-        if direction != 'unknown' and vehicle_direction != 'unknown' and direction != vehicle_direction:
+        if not vehicle_matches_trip_service(vehicle, schedule, scheduled_arrival, labels):
             continue
         vehicle_origin = parse_tracking_datetime(vehicle.get('originAimedDepartureTime'))
         if vehicle_origin is None:
@@ -2380,6 +2401,7 @@ def build_stop_departure_board(
             vehicles_by_board,
             live_vehicles,
             reference_now,
+            route_labels,
         )
         vehicle_id = str(vehicle.get('id') or '').strip() if isinstance(vehicle, dict) else ''
         if vehicle_id and vehicle_id in claimed_vehicle_ids:
@@ -2399,10 +2421,11 @@ def build_stop_departure_board(
                 or route_id
                 or 'Unknown'
             )
+            # The timetable is authoritative for where this journey actually goes.
             destination = (
-                str(vehicle.get('destination') or '').strip()
-                or schedule_destination_name(schedule)
+                schedule_destination_name(schedule)
                 or scheduled_arrival.get('destination')
+                or str(vehicle.get('destination') or '').strip()
                 or 'Unknown'
             )
             fleet_number = str(vehicle.get('fleetNumber') or '').strip() or None
