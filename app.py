@@ -2356,6 +2356,7 @@ def match_live_vehicle_to_trip(
     live_vehicles: list[dict[str, object]],
     reference_now: datetime,
     route_labels: dict[str, str] | None = None,
+    vehicle_origins: list[tuple[dict[str, object], datetime]] | None = None,
 ) -> dict[str, object] | None:
     labels = route_labels or {}
 
@@ -2374,24 +2375,36 @@ def match_live_vehicle_to_trip(
     if scheduled_origin is None:
         return None
 
+    if vehicle_origins is None:
+        vehicle_origins = build_vehicle_origin_index(live_vehicles)
+
     best_vehicle: dict[str, object] | None = None
     best_delta: float | None = None
-    for vehicle in live_vehicles or []:
-        if not isinstance(vehicle, dict):
-            continue
-        if not vehicle_matches_trip_service(vehicle, schedule, scheduled_arrival, labels):
-            continue
-        vehicle_origin = parse_tracking_datetime(vehicle.get('originAimedDepartureTime'))
-        if vehicle_origin is None:
-            continue
+    for vehicle, vehicle_origin in vehicle_origins:
         delta = abs((vehicle_origin - scheduled_origin).total_seconds())
         if delta > 300:
+            continue
+        if not vehicle_matches_trip_service(vehicle, schedule, scheduled_arrival, labels):
             continue
         if best_delta is None or delta < best_delta:
             best_delta = delta
             best_vehicle = vehicle
 
     return best_vehicle
+
+
+def build_vehicle_origin_index(
+    live_vehicles: list[dict[str, object]] | None,
+) -> list[tuple[dict[str, object], datetime]]:
+    """Parse each vehicle's aimed origin departure once per board rather than per candidate trip."""
+    origins: list[tuple[dict[str, object], datetime]] = []
+    for vehicle in live_vehicles or []:
+        if not isinstance(vehicle, dict):
+            continue
+        vehicle_origin = parse_tracking_datetime(vehicle.get('originAimedDepartureTime'))
+        if vehicle_origin is not None:
+            origins.append((vehicle, vehicle_origin))
+    return origins
 
 
 def build_stop_departure_board(
@@ -2419,6 +2432,7 @@ def build_stop_departure_board(
         return []
 
     vehicles_by_board = index_live_vehicles_for_stop(live_vehicles)
+    vehicle_origins = build_vehicle_origin_index(live_vehicles)
     claimed_vehicle_ids: set[str] = set()
     board: list[dict[str, object]] = []
 
@@ -2440,6 +2454,7 @@ def build_stop_departure_board(
             live_vehicles,
             reference_now,
             route_labels,
+            vehicle_origins,
         )
         vehicle_id = str(vehicle.get('id') or '').strip() if isinstance(vehicle, dict) else ''
         if vehicle_id and vehicle_id in claimed_vehicle_ids:
