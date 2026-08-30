@@ -781,7 +781,7 @@ function initializeMap() {
       setSidebarStop(normalizedStop);
       refreshSelectedStopDetails();
       if (stopDetailsRefreshIntervalId === null) {
-        stopDetailsRefreshIntervalId = window.setInterval(refreshSelectedStopDetails, 10000);
+        stopDetailsRefreshIntervalId = window.setInterval(refreshSelectedStopDetails, 30000);
       }
     };
 

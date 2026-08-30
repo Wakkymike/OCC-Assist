@@ -73,6 +73,7 @@ BODS_TIMETABLE_LIMIT = int(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_LIMIT', '10
 TRANSXCHANGE_MAX_FILES = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_FILES', '180'))
 TRANSXCHANGE_MAX_TRIPS = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_TRIPS', '4000'))
 BODS_VEHICLE_CACHE_SECONDS = int(os.environ.get('OCC_ASSIST_BODS_VEHICLE_CACHE_SECONDS', '5'))
+DEPARTURE_BOARD_REFRESH_SECONDS = int(os.environ.get('OCC_ASSIST_DEPARTURE_BOARD_REFRESH_SECONDS', '30'))
 _last_data_health_run_monotonic = 0.0
 _bods_vehicle_cache_lock = threading.Lock()
 _bods_vehicle_cache: dict[str, object] = {
@@ -4120,6 +4121,32 @@ def tracking_stops():
     )
 
 
+_departure_board_vehicles_lock = threading.Lock()
+_departure_board_vehicles: dict[str, object] = {'loadedAtMonotonic': 0.0, 'vehicles': []}
+
+
+def get_departure_board_vehicles(cache: dict[str, object] | None) -> list[dict[str, object]]:
+    """Enriching every vehicle is costly, so refresh the board's view on a fixed interval."""
+    ttl = max(5, int(DEPARTURE_BOARD_REFRESH_SECONDS))
+    now_monotonic = time.monotonic()
+
+    with _departure_board_vehicles_lock:
+        loaded_at = float(_departure_board_vehicles.get('loadedAtMonotonic') or 0.0)
+        if loaded_at > 0 and (now_monotonic - loaded_at) < ttl:
+            return list(_departure_board_vehicles.get('vehicles') or [])
+
+    try:
+        raw_vehicles, _ = fetch_bods_vehicles_cached()
+    except Exception:
+        raw_vehicles = []
+    enriched = enrich_tracking_vehicles(raw_vehicles, cache) if raw_vehicles else []
+
+    with _departure_board_vehicles_lock:
+        _departure_board_vehicles['loadedAtMonotonic'] = now_monotonic
+        _departure_board_vehicles['vehicles'] = enriched
+    return list(enriched)
+
+
 @app.get('/api/tracking/stops/<stop_id>')
 @login_required('tracking')
 def tracking_stop_details(stop_id: str):
@@ -4138,11 +4165,7 @@ def tracking_stop_details(stop_id: str):
     if stop is None:
         return jsonify({'ok': False, 'message': 'Stop not found.'}), 404
 
-    try:
-        raw_vehicles, _ = fetch_bods_vehicles_cached()
-    except Exception:
-        raw_vehicles = []
-    live_vehicles = enrich_tracking_vehicles(raw_vehicles, cache) if raw_vehicles else []
+    live_vehicles = get_departure_board_vehicles(cache)
     trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
     now = datetime.now(timezone.utc)
     route_labels = {
