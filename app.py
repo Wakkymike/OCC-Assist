@@ -2919,6 +2919,7 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                 'routeId': route_id or jp_route_ref or raw_jp_id,
                 'directionId': '1' if direction == 'outbound' else ('0' if direction == 'inbound' else ''),
                 'sectionRefs': section_refs,
+                'destinationDisplay': str(jp.findtext('tx:DestinationDisplay', default='', namespaces=tx_ns) or '').strip(),
             }
 
         for trip in root.findall('.//tx:VehicleJourney', tx_ns):
@@ -2930,6 +2931,13 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                 continue
             departure_time = str(trip.findtext('tx:DepartureTime', default='00:00:00', namespaces=tx_ns) or '00:00:00').strip()
             service_ref = str(trip.findtext('tx:ServiceRef', default='', namespaces=tx_ns) or '').strip()
+            # This feed carries the board/duty identifier as a ticket machine journey code.
+            journey_code = str(
+                trip.findtext('tx:Operational/tx:TicketMachine/tx:JourneyCode', default='', namespaces=tx_ns)
+                or trip.findtext('tx:Operational/tx:Block/tx:BlockNumber', default='', namespaces=tx_ns)
+                or ''
+            ).strip()
+            trip_destination = str(trip.findtext('tx:DestinationDisplay', default='', namespaces=tx_ns) or '').strip()
             timing_overrides: dict[str, int] = {}
             for link in trip.findall('tx:VehicleJourneyTimingLink', tx_ns):
                 jp_link_ref = str(link.findtext('tx:JourneyPatternTimingLinkRef', default='', namespaces=tx_ns) or '').strip()
@@ -2943,6 +2951,8 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                     'departureTime': departure_time,
                     'serviceRef': service_ref or route_id or raw_jp_ref,
                     'timingOverrides': timing_overrides,
+                    'journeyCode': journey_code,
+                    'destinationDisplay': trip_destination,
                 }
             )
 
@@ -3054,6 +3064,8 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                 'trip_id': trip_id,
                 'shape_id': shape_id,
                 'direction_id': str(jp.get('directionId') or ''),
+                'trip_headsign': str(trip.get('destinationDisplay') or jp.get('destinationDisplay') or ''),
+                'block_id': str(trip.get('journeyCode') or ''),
             }
         )
 
@@ -3070,7 +3082,11 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                 writer.writerow({name: row.get(name, '') for name in fieldnames})
 
     write_csv(extracted_dir / 'routes.txt', ['route_id', 'agency_id', 'route_short_name', 'route_long_name'], route_rows)
-    write_csv(extracted_dir / 'trips.txt', ['route_id', 'service_id', 'trip_id', 'shape_id', 'direction_id'], trip_rows)
+    write_csv(
+        extracted_dir / 'trips.txt',
+        ['route_id', 'service_id', 'trip_id', 'shape_id', 'direction_id', 'trip_headsign', 'block_id'],
+        trip_rows,
+    )
     write_csv(extracted_dir / 'shapes.txt', ['shape_id', 'shape_pt_lat', 'shape_pt_lon', 'shape_pt_sequence'], shape_rows)
     write_csv(extracted_dir / 'stops.txt', ['stop_id', 'stop_code', 'stop_name', 'stop_lat', 'stop_lon'], stops_rows)
     write_csv(extracted_dir / 'stop_times.txt', ['trip_id', 'arrival_time', 'departure_time', 'stop_id', 'stop_sequence'], stop_time_rows)
