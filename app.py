@@ -1637,6 +1637,38 @@ def collect_stop_match_keys(stop: dict[str, object] | None) -> set[str]:
     return keys
 
 
+_stop_trip_index_lock = threading.Lock()
+_stop_trip_index_memo: dict[str, object] = {'source': None, 'index': None}
+
+
+def build_stop_trip_index(trip_schedules: dict[str, object]) -> dict[str, list[str]]:
+    """Map each stop key to the trips calling there, so a board build need not scan every trip."""
+    with _stop_trip_index_lock:
+        # Identity check; the reference is retained so the id cannot be recycled.
+        if _stop_trip_index_memo['source'] is trip_schedules:
+            cached = _stop_trip_index_memo['index']
+            if isinstance(cached, dict):
+                return cached
+
+    index: dict[str, list[str]] = {}
+    for trip_id, payload in trip_schedules.items():
+        if not isinstance(payload, dict):
+            continue
+        schedule_stops = payload.get('stops')
+        if not isinstance(schedule_stops, list):
+            continue
+        for entry in schedule_stops:
+            if not isinstance(entry, dict):
+                continue
+            for key in collect_stop_match_keys(entry):
+                index.setdefault(key, []).append(str(trip_id))
+
+    with _stop_trip_index_lock:
+        _stop_trip_index_memo['source'] = trip_schedules
+        _stop_trip_index_memo['index'] = index
+    return index
+
+
 def find_stop_index(stop: dict[str, object] | None, stop_sequence: list[dict[str, object]] | None) -> int | None:
     if not isinstance(stop, dict) or not isinstance(stop_sequence, list):
         return None
@@ -2019,7 +2051,13 @@ def build_stop_next_arrivals(
         return []
 
     arrivals: list[dict[str, object]] = []
-    for trip_id, payload in trip_schedules.items():
+    stop_trip_index = build_stop_trip_index(trip_schedules)
+    candidate_trip_ids: set[str] = set()
+    for key in stop_match_keys:
+        candidate_trip_ids.update(stop_trip_index.get(key, ()))
+
+    for trip_id in candidate_trip_ids:
+        payload = trip_schedules.get(trip_id)
         if not isinstance(payload, dict):
             continue
         schedule_stops = payload.get('stops', []) if isinstance(payload.get('stops'), list) else []
@@ -3532,14 +3570,41 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path, allowed_route_prefixes
     }
 
 
-def load_gtfs_cache(allow_rebuild: bool = False) -> dict[str, object] | None:
-    if not GTFS_CACHE_PATH.exists():
+_gtfs_cache_lock = threading.Lock()
+_gtfs_cache_memo: dict[str, object] = {'signature': None, 'data': None}
+
+
+def read_gtfs_cache_file() -> dict[str, object] | None:
+    """Parsing the multi-megabyte cache per request is far too slow, so memoise on file identity."""
+    try:
+        stat_result = GTFS_CACHE_PATH.stat()
+    except OSError:
         return None
+    signature = (stat_result.st_mtime_ns, stat_result.st_size)
+
+    with _gtfs_cache_lock:
+        if _gtfs_cache_memo['signature'] == signature:
+            cached = _gtfs_cache_memo['data']
+            return cached if isinstance(cached, dict) else None
+
     try:
         data = json.loads(GTFS_CACHE_PATH.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
+        return None
+
+    with _gtfs_cache_lock:
+        _gtfs_cache_memo['signature'] = signature
+        _gtfs_cache_memo['data'] = data
+    return data
+
+
+def load_gtfs_cache(allow_rebuild: bool = False) -> dict[str, object] | None:
+    if not GTFS_CACHE_PATH.exists():
+        return None
+    data = read_gtfs_cache_file()
+    if data is None:
         return None
     if allow_rebuild and ((not data.get('tripSchedules') and GTFS_UPLOAD_PATH.exists()) or not data.get('serviceCalendar')) and GTFS_UPLOAD_PATH.exists():
         try:
