@@ -1528,10 +1528,28 @@ def parse_gtfs_time(value: object) -> int | None:
     return hours * 3600 + minutes * 60 + seconds
 
 
+GTFS_WEEKDAY_COLUMNS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+TRANSXCHANGE_DAY_GROUPS = {
+    'mondaytofriday': {'monday', 'tuesday', 'wednesday', 'thursday', 'friday'},
+    'mondaytosaturday': {'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'},
+    'mondaytosunday': set(GTFS_WEEKDAY_COLUMNS),
+    'notsaturday': {'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'sunday'},
+    'weekend': {'saturday', 'sunday'},
+    'everyday': set(GTFS_WEEKDAY_COLUMNS),
+}
+# Timetables can span years; only keep a usable window so the cache stays small.
+SERVICE_CALENDAR_PAST_DAYS = 7
+SERVICE_CALENDAR_FUTURE_DAYS = 400
+
+
 def build_gtfs_service_calendar(extracted_dir: Path) -> dict[str, list[str]]:
     calendar_path = find_gtfs_file(extracted_dir, 'calendar.txt')
     calendar_dates_path = find_gtfs_file(extracted_dir, 'calendar_dates.txt')
     active_dates: dict[str, set[str]] = {}
+
+    today = datetime.now(LONDON_TZ).date()
+    window_start = today - timedelta(days=SERVICE_CALENDAR_PAST_DAYS)
+    window_end = today + timedelta(days=SERVICE_CALENDAR_FUTURE_DAYS)
 
     if calendar_path is not None:
         for row in read_gtfs_rows(calendar_path):
@@ -1548,11 +1566,12 @@ def build_gtfs_service_calendar(extracted_dir: Path) -> dict[str, list[str]]:
             except ValueError:
                 continue
 
-            weekday_columns = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            weekday_columns = GTFS_WEEKDAY_COLUMNS
             weekday_flags = [str(row.get(column) or '0').strip() for column in weekday_columns]
 
-            current_date = start_date
-            while current_date <= end_date:
+            current_date = max(start_date, window_start)
+            final_date = min(end_date, window_end)
+            while current_date <= final_date:
                 weekday_index = current_date.weekday()
                 if weekday_flags[weekday_index] == '1':
                     active_dates.setdefault(service_id, set()).add(current_date.strftime('%Y%m%d'))
@@ -1989,6 +2008,7 @@ def build_stop_next_arrivals(
     trip_schedules: dict[str, object],
     reference_time: object | None = None,
     max_results: int = 5,
+    service_calendar: dict[str, list[str]] | None = None,
 ) -> list[dict[str, object]]:
     if not isinstance(stop, dict) or not isinstance(trip_schedules, dict):
         return []
@@ -2004,6 +2024,10 @@ def build_stop_next_arrivals(
             continue
         schedule_stops = payload.get('stops', []) if isinstance(payload.get('stops'), list) else []
         if not schedule_stops:
+            continue
+        if service_calendar and not service_is_active(
+            str(payload.get('serviceId') or ''), service_calendar, reference_now.astimezone(LONDON_TZ)
+        ):
             continue
 
         first_stop = next((entry for entry in schedule_stops if isinstance(entry, dict)), None)
@@ -2318,13 +2342,20 @@ def build_stop_departure_board(
     route_labels: dict[str, str],
     reference_time: object | None = None,
     max_results: int = 6,
+    service_calendar: dict[str, list[str]] | None = None,
 ) -> list[dict[str, object]]:
     """Departure-board style arrivals: live predictions where matched, timetable otherwise."""
     if not isinstance(stop, dict) or not isinstance(trip_schedules, dict):
         return []
 
     reference_now = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
-    scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, reference_now, max_results=max_results * 8)
+    scheduled_arrivals = build_stop_next_arrivals(
+        stop,
+        trip_schedules,
+        reference_now,
+        max_results=max_results * 8,
+        service_calendar=service_calendar,
+    )
     if not scheduled_arrivals:
         return []
 
@@ -2849,6 +2880,8 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
     journey_patterns: dict[str, dict[str, object]] = {}
     section_links: dict[str, list[dict[str, object]]] = {}
     trips: list[dict[str, object]] = []
+    service_days: dict[str, set[str]] = {}
+    service_periods: dict[str, tuple[str, str]] = {}
 
     for xml_path in xml_files:
         try:
@@ -2895,6 +2928,25 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                     'route_long_name': str(root.findtext('.//tx:OutboundDescription/tx:Description', default='', namespaces=tx_ns) or '').strip(),
                 },
             )
+
+        service_ref_for_file = str(root.findtext('.//tx:Service/tx:ServiceCode', default='', namespaces=tx_ns) or '').strip()
+        if service_ref_for_file:
+            operating_profile = root.find('.//tx:Service/tx:OperatingProfile', tx_ns)
+            if operating_profile is not None:
+                days_node = operating_profile.find('tx:RegularDayType/tx:DaysOfWeek', tx_ns)
+                if days_node is not None:
+                    for day_element in days_node:
+                        day_name = day_element.tag.split('}')[-1].strip().lower()
+                        if day_name in GTFS_WEEKDAY_COLUMNS:
+                            service_days.setdefault(service_ref_for_file, set()).add(day_name)
+                        elif day_name in TRANSXCHANGE_DAY_GROUPS:
+                            service_days.setdefault(service_ref_for_file, set()).update(TRANSXCHANGE_DAY_GROUPS[day_name])
+            period = root.find('.//tx:Service/tx:OperatingPeriod', tx_ns)
+            if period is not None:
+                start_text = str(period.findtext('tx:StartDate', default='', namespaces=tx_ns) or '').strip()
+                end_text = str(period.findtext('tx:EndDate', default='', namespaces=tx_ns) or '').strip()
+                if start_text:
+                    service_periods[service_ref_for_file] = (start_text, end_text)
 
         current_sections = extract_transxchange_section_sequences(root, tx_ns)
         for section_id, links in current_sections.items():
@@ -3087,6 +3139,27 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
         ['route_id', 'service_id', 'trip_id', 'shape_id', 'direction_id', 'trip_headsign', 'block_id'],
         trip_rows,
     )
+
+    calendar_rows: list[dict[str, object]] = []
+    for service_id, days in service_days.items():
+        start_text, end_text = service_periods.get(service_id, ('', ''))
+        start_date = str(start_text or '').replace('-', '').strip()
+        end_date = str(end_text or '').replace('-', '').strip()
+        if len(start_date) != 8:
+            start_date = (datetime.now(LONDON_TZ).date() - timedelta(days=SERVICE_CALENDAR_PAST_DAYS)).strftime('%Y%m%d')
+        if len(end_date) != 8:
+            end_date = (datetime.now(LONDON_TZ).date() + timedelta(days=SERVICE_CALENDAR_FUTURE_DAYS)).strftime('%Y%m%d')
+        row: dict[str, object] = {'service_id': service_id, 'start_date': start_date, 'end_date': end_date}
+        for column in GTFS_WEEKDAY_COLUMNS:
+            row[column] = '1' if column in days else '0'
+        calendar_rows.append(row)
+
+    if calendar_rows:
+        write_csv(
+            extracted_dir / 'calendar.txt',
+            ['service_id', *GTFS_WEEKDAY_COLUMNS, 'start_date', 'end_date'],
+            calendar_rows,
+        )
     write_csv(extracted_dir / 'shapes.txt', ['shape_id', 'shape_pt_lat', 'shape_pt_lon', 'shape_pt_sequence'], shape_rows)
     write_csv(extracted_dir / 'stops.txt', ['stop_id', 'stop_code', 'stop_name', 'stop_lat', 'stop_lon'], stops_rows)
     write_csv(extracted_dir / 'stop_times.txt', ['trip_id', 'arrival_time', 'departure_time', 'stop_id', 'stop_sequence'], stop_time_rows)
@@ -3980,6 +4053,7 @@ def tracking_stop_details(stop_id: str):
         route_labels,
         now,
         max_results=6,
+        service_calendar=cache.get('serviceCalendar', {}) if isinstance(cache, dict) else {},
     )
     if not stop_payload['nextArrivals']:
         stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules, max_results=6)
