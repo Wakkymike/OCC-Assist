@@ -85,6 +85,67 @@ def test_board_matched_stop_arrivals_use_live_fleet_number():
     assert arrivals[0]['boardNumber'] == 'RB-77'
 
 
+def test_stop_departure_board_mixes_live_and_scheduled_entries():
+    stop = {'stopId': '0100B123', 'name': 'Market Street', 'latitude': 53.4, 'longitude': -2.3}
+    trip_schedules = {
+        'trip-live': {
+            'routeId': 'route-10',
+            'direction': 'outbound',
+            'blockId': 'RB-77',
+            'headsign': 'Bolton Interchange',
+            'stops': [
+                {'stopId': 'origin', 'name': 'Depot', 'arrivalTime': '11:55:00', 'departureTime': '11:55:00'},
+                {'stopId': '0100B123', 'name': 'Market Street', 'arrivalTime': '12:05:00', 'departureTime': '12:05:00'},
+            ],
+        },
+        'trip-timetabled': {
+            'routeId': 'route-10',
+            'direction': 'outbound',
+            'headsign': 'Bolton Interchange',
+            'stops': [
+                {'stopId': 'origin', 'name': 'Depot', 'arrivalTime': '12:15:00', 'departureTime': '12:15:00'},
+                {'stopId': '0100B123', 'name': 'Market Street', 'arrivalTime': '12:25:00', 'departureTime': '12:25:00'},
+            ],
+        },
+    }
+    live_vehicles = [
+        {
+            'id': 'vehicle-1',
+            'boardNumber': 'RB-77',
+            'service': 'route-10',
+            'fleetNumber': '6123',
+            'destination': 'Bolton Interchange',
+            'direction': 'outbound',
+            'punctuality': {'deltaSeconds': 60},
+        }
+    ]
+
+    board = app_module.build_stop_departure_board(
+        stop,
+        trip_schedules,
+        live_vehicles,
+        {'route-10': '10'},
+        datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(board) == 2
+    assert board[0]['isLive'] is True
+    assert board[0]['service'] == '10'
+    assert board[0]['fleetNumber'] == '6123'
+    assert board[0]['boardNumber'] == 'RB-77'
+    assert board[0]['destination'] == 'Bolton Interchange'
+    assert board[0]['countdownSeconds'] == 360
+    assert board[1]['isLive'] is False
+    assert board[1]['source'] == 'scheduled'
+    assert board[1]['scheduledTime']
+
+
+def test_departure_countdown_label_reads_due_now_within_a_minute():
+    assert app_module.format_departure_countdown_label(60) == 'Due now'
+    assert app_module.format_departure_countdown_label(0) == 'Due now'
+    assert app_module.format_departure_countdown_label(300) == '5 min'
+
+
 def test_vehicle_punctuality_marks_early_vehicles_as_early():
     vehicle = {
         'originAimedDepartureTime': '2024-01-01T12:00:00+00:00',

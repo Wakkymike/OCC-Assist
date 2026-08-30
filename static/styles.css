@@ -676,10 +676,85 @@ body::before {
   color: var(--muted);
 }
 
+.tracking-stop-arrivals li.stop-arrival {
+  align-items: center;
+  gap: 10px;
+}
+
+.stop-arrival-line {
+  flex: 0 0 auto;
+  min-width: 38px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #f5c518;
+  color: #10161f;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.stop-arrival-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stop-arrival-destination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.stop-arrival-live-icon {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: #35e06a;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.stop-arrival-live-icon circle {
+  fill: #35e06a;
+  stroke: none;
+}
+
+.stop-arrival-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .stop-arrival-countdown {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   color: #9de8ff;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.stop-arrival-countdown.is-scheduled {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.stop-arrival-scheduled-tag {
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .map-toolbar {

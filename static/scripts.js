@@ -317,6 +317,7 @@ function initializeMap() {
     let lastStopClickAt = 0;
     let selectedStopIdentifier = null;
     let stopDetailsRefreshIntervalId = null;
+    let stopCountdownIntervalId = null;
     const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
 
@@ -433,18 +434,82 @@ function initializeMap() {
       });
     };
 
+    const liveSignalIcon = '<svg class="stop-arrival-live-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 8.5a15 15 0 0 1 19 0"/><path d="M5.5 12a10.5 10.5 0 0 1 13 0"/><path d="M8.5 15.5a6 6 0 0 1 7 0"/><circle cx="12" cy="19" r="1.4"/></svg>';
+
+    const formatArrivalCountdown = (totalSeconds) => {
+      const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+      if (seconds <= 60) {
+        return 'Due now';
+      }
+      const minutes = Math.floor(seconds / 60);
+      if (minutes >= 60) {
+        return `${Math.floor(minutes / 60)}h ${minutes % 60} min`;
+      }
+      return `${minutes} min`;
+    };
+
+    const arrivalSecondsRemaining = (arrival) => {
+      const expectedAt = Date.parse(String(arrival?.expectedAt || arrival?.scheduledAt || ''));
+      if (Number.isFinite(expectedAt)) {
+        return Math.max(0, Math.round((expectedAt - Date.now()) / 1000));
+      }
+      return Math.max(0, Number(arrival?.countdownSeconds) || 0);
+    };
+
+    const tickStopArrivalCountdowns = () => {
+      if (!selectedStopArrivals) return;
+      selectedStopArrivals.querySelectorAll('[data-expected-at]').forEach((element) => {
+        const expectedAt = Date.parse(element.dataset.expectedAt || '');
+        if (!Number.isFinite(expectedAt)) return;
+        element.textContent = formatArrivalCountdown((expectedAt - Date.now()) / 1000);
+      });
+    };
+
+    const stopCountdownTicker = () => {
+      if (stopCountdownIntervalId !== null) {
+        window.clearInterval(stopCountdownIntervalId);
+        stopCountdownIntervalId = null;
+      }
+    };
+
+    const startCountdownTicker = () => {
+      stopCountdownTicker();
+      if (!selectedStopArrivals || !selectedStopArrivals.querySelector('[data-expected-at]')) return;
+      stopCountdownIntervalId = window.setInterval(tickStopArrivalCountdowns, 1000);
+    };
+
     const renderStopArrivalMarkup = (arrivals = []) => {
       if (!Array.isArray(arrivals) || !arrivals.length) {
         return '<li class="muted">No upcoming BNGN services.</li>';
       }
 
-      return arrivals.map((arrival) => {
-        const service = String(arrival?.service || arrival?.routeId || arrival?.serviceId || 'Unknown').trim() || 'Unknown';
-        const fleet = String(arrival?.fleetNumber || 'Unknown fleet').trim() || 'Unknown fleet';
-        const direction = arrival?.direction ? ` ${formatVehicleDirection(arrival.direction)}` : '';
-        const countdown = String(arrival?.countdownLabel || 'Due now').trim() || 'Due now';
-        const sourceLabel = arrival?.source === 'scheduled' ? ' (Scheduled)' : '';
-        return `<li><span class="stop-arrival-service">${escapeHtml(service)} ${escapeHtml(fleet)}${escapeHtml(direction)}</span><span class="stop-arrival-countdown">${escapeHtml(countdown)}${sourceLabel}</span></li>`;
+      return arrivals.slice(0, 6).map((arrival) => {
+        const service = String(arrival?.service || arrival?.routeId || arrival?.serviceId || '—').trim() || '—';
+        const destination = String(arrival?.destination || 'Unknown destination').trim() || 'Unknown destination';
+        const isLive = Boolean(arrival?.isLive ?? arrival?.source === 'live');
+        const fleet = String(arrival?.fleetNumber || '').trim();
+        const board = String(arrival?.boardNumber || '').trim();
+        const metaParts = [];
+        if (fleet) metaParts.push(`Fleet ${fleet}`);
+        if (board) metaParts.push(`Board ${board}`);
+        if (!isLive) metaParts.push('Scheduled');
+        const meta = metaParts.join(' · ');
+
+        const seconds = arrivalSecondsRemaining(arrival);
+        const countdown = isLive
+          ? `<span class="stop-arrival-countdown" data-expected-at="${escapeHtml(String(arrival?.expectedAt || ''))}">${escapeHtml(formatArrivalCountdown(seconds))}</span>`
+          : `<span class="stop-arrival-countdown is-scheduled">${escapeHtml(String(arrival?.scheduledTime || formatArrivalCountdown(seconds)))}<span class="stop-arrival-scheduled-tag">(Scheduled)</span></span>`;
+
+        return [
+          `<li class="stop-arrival${isLive ? ' is-live' : ''}">`,
+          `<span class="stop-arrival-line">${escapeHtml(service)}</span>`,
+          '<span class="stop-arrival-body">',
+          `<span class="stop-arrival-destination">${escapeHtml(destination)}${isLive ? liveSignalIcon : ''}</span>`,
+          meta ? `<span class="stop-arrival-meta">${escapeHtml(meta)}</span>` : '',
+          '</span>',
+          countdown,
+          '</li>',
+        ].join('');
       }).join('');
     };
 
@@ -458,6 +523,7 @@ function initializeMap() {
       }
       if (selectedStopPanel) selectedStopPanel.hidden = true;
       selectedStopIdentifier = null;
+      stopCountdownTicker();
     };
 
     const setSidebarStop = (stop) => {
@@ -476,7 +542,10 @@ function initializeMap() {
       if (selectedStopName) selectedStopName.textContent = stopName;
       if (selectedStopCode) selectedStopCode.textContent = stopCode;
       if (selectedStopId) selectedStopId.textContent = stopIdValue;
-      if (selectedStopArrivals) selectedStopArrivals.innerHTML = renderStopArrivalMarkup(nextArrivals);
+      if (selectedStopArrivals) {
+        selectedStopArrivals.innerHTML = renderStopArrivalMarkup(nextArrivals);
+        startCountdownTicker();
+      }
     };
 
     const setSidebarVehicle = (vehicle) => {
@@ -493,6 +562,7 @@ function initializeMap() {
       }
       if (selectedStopPanel) selectedStopPanel.hidden = true;
       selectedStopIdentifier = null;
+      stopCountdownTicker();
       const fleetDisplay = String(vehicle.fleetNumber || 'Unknown').trim() || 'Unknown';
       if (selectedService) selectedService.textContent = fleetDisplay;
       if (selectedRoute) selectedRoute.textContent = formatRouteLabel(vehicle);

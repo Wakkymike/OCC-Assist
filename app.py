@@ -2030,9 +2030,13 @@ def build_stop_next_arrivals(
                     'serviceId': str(payload.get('serviceId') or '').strip() or None,
                     'direction': normalize_gtfs_direction(str(payload.get('direction') or '')),
                     'scheduledAt': scheduled_at.isoformat(),
+                    'scheduledTime': format_local_clock_time(scheduled_at),
                     'countdownSeconds': countdown_seconds,
                     'countdownLabel': format_countdown_label(countdown_seconds),
                     'stopName': str(schedule_entry.get('name') or stop.get('name') or '').strip() or None,
+                    'destination': schedule_destination_name(payload),
+                    'blockId': str(payload.get('blockId') or '').strip() or None,
+                    'originDepartureTime': first_stop_time or None,
                 }
             )
             break
@@ -2052,6 +2056,43 @@ def format_countdown_label(total_seconds: int) -> str:
     if hours:
         return f'{hours}h {minutes}m'
     return f'{minutes}m'
+
+
+def format_departure_countdown_label(total_seconds: int) -> str:
+    """Departure-board style countdown: anything inside a minute reads 'Due now'."""
+    total_seconds = max(0, int(total_seconds))
+    if total_seconds <= 60:
+        return 'Due now'
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    if hours:
+        return f'{hours}h {minutes} min'
+    return f'{minutes} min'
+
+
+def format_local_clock_time(value: datetime | None) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    try:
+        return value.astimezone(LONDON_TZ).strftime('%H:%M')
+    except Exception:
+        return value.strftime('%H:%M')
+
+
+def schedule_destination_name(schedule: dict[str, object] | None) -> str | None:
+    if not isinstance(schedule, dict):
+        return None
+    headsign = str(schedule.get('headsign') or '').strip()
+    if headsign:
+        return headsign
+    schedule_stops = schedule.get('stops')
+    if isinstance(schedule_stops, list):
+        for entry in reversed(schedule_stops):
+            if isinstance(entry, dict):
+                name = str(entry.get('name') or '').strip()
+                if name:
+                    return name
+    return None
 
 
 def build_live_stop_arrivals(
@@ -2202,6 +2243,169 @@ def build_board_matched_stop_arrivals(
 
     arrivals.sort(key=lambda item: int(item.get('countdownSeconds') or 0))
     return arrivals[:max_results]
+
+
+def index_live_vehicles_for_stop(live_vehicles: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    index: dict[str, dict[str, object]] = {}
+    for vehicle in live_vehicles or []:
+        if not isinstance(vehicle, dict):
+            continue
+        for value in (
+            vehicle.get('boardNumber'),
+            vehicle.get('blockRef'),
+            vehicle.get('journeyCode'),
+            vehicle.get('vehicleJourneyRef'),
+            vehicle.get('journeyRef'),
+        ):
+            board_key = normalize_tracking_key(str(value or ''))
+            if board_key:
+                index.setdefault(board_key, vehicle)
+    return index
+
+
+def match_live_vehicle_to_trip(
+    scheduled_arrival: dict[str, object],
+    schedule: dict[str, object],
+    vehicles_by_board: dict[str, dict[str, object]],
+    live_vehicles: list[dict[str, object]],
+    reference_now: datetime,
+) -> dict[str, object] | None:
+    board_key = normalize_tracking_key(str(schedule.get('blockId') or ''))
+    if board_key and board_key in vehicles_by_board:
+        return vehicles_by_board[board_key]
+
+    trip_key = normalize_tracking_key(str(scheduled_arrival.get('tripId') or ''))
+    if trip_key and trip_key in vehicles_by_board:
+        return vehicles_by_board[trip_key]
+
+    route_key = normalize_tracking_key(str(schedule.get('routeId') or scheduled_arrival.get('routeId') or ''))
+    direction = normalize_gtfs_direction(str(schedule.get('direction') or ''))
+    origin_time = str(scheduled_arrival.get('originDepartureTime') or '').strip()
+    if not origin_time:
+        return None
+    scheduled_origin = build_scheduled_stop_datetime(reference_now, origin_time, origin_time)
+    if scheduled_origin is None:
+        return None
+
+    best_vehicle: dict[str, object] | None = None
+    best_delta: float | None = None
+    for vehicle in live_vehicles or []:
+        if not isinstance(vehicle, dict):
+            continue
+        vehicle_route_key = normalize_tracking_key(str(vehicle.get('service') or vehicle.get('routeId') or ''))
+        if route_key and vehicle_route_key and route_key != vehicle_route_key:
+            continue
+        vehicle_direction = normalize_gtfs_direction(str(vehicle.get('direction') or ''))
+        if direction != 'unknown' and vehicle_direction != 'unknown' and direction != vehicle_direction:
+            continue
+        vehicle_origin = parse_tracking_datetime(vehicle.get('originAimedDepartureTime'))
+        if vehicle_origin is None:
+            continue
+        delta = abs((vehicle_origin - scheduled_origin).total_seconds())
+        if delta > 300:
+            continue
+        if best_delta is None or delta < best_delta:
+            best_delta = delta
+            best_vehicle = vehicle
+
+    return best_vehicle
+
+
+def build_stop_departure_board(
+    stop: dict[str, object],
+    trip_schedules: dict[str, object],
+    live_vehicles: list[dict[str, object]],
+    route_labels: dict[str, str],
+    reference_time: object | None = None,
+    max_results: int = 6,
+) -> list[dict[str, object]]:
+    """Departure-board style arrivals: live predictions where matched, timetable otherwise."""
+    if not isinstance(stop, dict) or not isinstance(trip_schedules, dict):
+        return []
+
+    reference_now = parse_tracking_datetime(reference_time) or datetime.now(timezone.utc)
+    scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, reference_now, max_results=max_results * 8)
+    if not scheduled_arrivals:
+        return []
+
+    vehicles_by_board = index_live_vehicles_for_stop(live_vehicles)
+    claimed_vehicle_ids: set[str] = set()
+    board: list[dict[str, object]] = []
+
+    for scheduled_arrival in scheduled_arrivals:
+        trip_id = str(scheduled_arrival.get('tripId') or '').strip()
+        schedule = trip_schedules.get(trip_id)
+        if not isinstance(schedule, dict):
+            schedule = {}
+
+        route_id = str(schedule.get('routeId') or scheduled_arrival.get('routeId') or '').strip()
+        direction = normalize_gtfs_direction(str(schedule.get('direction') or scheduled_arrival.get('direction') or ''))
+        scheduled_seconds = int(scheduled_arrival.get('countdownSeconds') or 0)
+        scheduled_at = parse_tracking_datetime(scheduled_arrival.get('scheduledAt'))
+
+        vehicle = match_live_vehicle_to_trip(
+            scheduled_arrival,
+            schedule,
+            vehicles_by_board,
+            live_vehicles,
+            reference_now,
+        )
+        vehicle_id = str(vehicle.get('id') or '').strip() if isinstance(vehicle, dict) else ''
+        if vehicle_id and vehicle_id in claimed_vehicle_ids:
+            vehicle = None
+        if isinstance(vehicle, dict) and vehicle_id:
+            claimed_vehicle_ids.add(vehicle_id)
+
+        is_live = isinstance(vehicle, dict)
+        if is_live:
+            punctuality = vehicle.get('punctuality') if isinstance(vehicle.get('punctuality'), dict) else {}
+            delay_seconds = int(punctuality.get('deltaSeconds') or 0)
+            expected_seconds = max(0, scheduled_seconds + delay_seconds)
+            expected_at = reference_now + timedelta(seconds=expected_seconds)
+            service = (
+                str(vehicle.get('service') or '').strip()
+                or route_labels.get(route_id)
+                or route_id
+                or 'Unknown'
+            )
+            destination = (
+                str(vehicle.get('destination') or '').strip()
+                or schedule_destination_name(schedule)
+                or scheduled_arrival.get('destination')
+                or 'Unknown'
+            )
+            fleet_number = str(vehicle.get('fleetNumber') or '').strip() or None
+            board_number = str(vehicle.get('boardNumber') or schedule.get('blockId') or '').strip() or None
+        else:
+            expected_seconds = scheduled_seconds
+            expected_at = scheduled_at or (reference_now + timedelta(seconds=expected_seconds))
+            service = route_labels.get(route_id) or route_id or 'Unknown'
+            destination = schedule_destination_name(schedule) or scheduled_arrival.get('destination') or 'Unknown'
+            fleet_number = None
+            board_number = str(schedule.get('blockId') or '').strip() or None
+
+        board.append(
+            {
+                'tripId': trip_id or None,
+                'service': service,
+                'routeId': route_id or None,
+                'direction': direction,
+                'destination': str(destination or 'Unknown').strip() or 'Unknown',
+                'fleetNumber': fleet_number,
+                'boardNumber': board_number,
+                'isLive': is_live,
+                'source': 'live' if is_live else 'scheduled',
+                'countdownSeconds': expected_seconds,
+                'countdownLabel': format_departure_countdown_label(expected_seconds),
+                'expectedAt': expected_at.isoformat() if isinstance(expected_at, datetime) else None,
+                'scheduledAt': scheduled_arrival.get('scheduledAt'),
+                'scheduledTime': scheduled_arrival.get('scheduledTime')
+                or format_local_clock_time(scheduled_at),
+            }
+        )
+
+    board.sort(key=lambda item: (int(item.get('countdownSeconds') or 0), str(item.get('service') or '')))
+    return board[:max_results]
 
 
 def select_last_stop_passed(vehicle: dict[str, object], route_sequence: dict[str, object] | None) -> dict[str, object] | None:
@@ -2921,6 +3125,8 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path, allowed_route_prefixes
     trip_routes: dict[str, str] = {}
     trip_directions: dict[str, str] = {}
     trip_service_ids: dict[str, str] = {}
+    trip_headsigns: dict[str, str] = {}
+    trip_block_ids: dict[str, str] = {}
     for row in trip_rows:
         route_id = str(row.get('route_id') or '').strip()
         trip_id = str(row.get('trip_id') or '').strip()
@@ -2936,6 +3142,8 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path, allowed_route_prefixes
             trip_routes[trip_id] = route_id
             trip_directions[trip_id] = direction
             trip_service_ids[trip_id] = service_id
+            trip_headsigns[trip_id] = str(row.get('trip_headsign') or '').strip()
+            trip_block_ids[trip_id] = str(row.get('block_id') or '').strip()
         if shape_id:
             route_shapes.setdefault(route_id, set()).add(shape_id)
             route_shape_directions.setdefault(route_id, {}).setdefault(shape_id, set()).add(direction)
@@ -3057,6 +3265,8 @@ def parse_gtfs_routes_from_directory(extracted_dir: Path, allowed_route_prefixes
                         'routeId': trip_routes.get(trip_id, ''),
                         'direction': trip_directions.get(trip_id, 'unknown'),
                         'serviceId': trip_service_ids.get(trip_id, ''),
+                        'headsign': trip_headsigns.get(trip_id, ''),
+                        'blockId': trip_block_ids.get(trip_id, ''),
                         'stops': schedule_stops,
                     }
 
@@ -3740,48 +3950,28 @@ def tracking_stop_details(stop_id: str):
         raw_vehicles = []
     live_vehicles = enrich_tracking_vehicles(raw_vehicles, cache) if raw_vehicles else []
     trip_schedules = cache.get('tripSchedules', {}) if isinstance(cache, dict) else {}
-    scheduled_arrivals = build_stop_next_arrivals(stop, trip_schedules, datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
     route_labels = {
-        str(route.get('id') or '').strip(): str(route.get('label') or route.get('lineName') or route.get('id') or '').strip()
+        str(route.get('id') or '').strip(): str(route.get('lineName') or route.get('label') or route.get('id') or '').strip()
         for route in cache.get('routes', [])
         if isinstance(route, dict)
     }
     stop_payload = serialize_tracking_stop(stop)
-    stop_payload['nextArrivals'] = build_board_matched_stop_arrivals(
+    stop_payload['nextArrivals'] = build_stop_departure_board(
         stop,
-        scheduled_arrivals,
         trip_schedules,
         live_vehicles,
         route_labels,
+        now,
+        max_results=6,
     )
     if not stop_payload['nextArrivals']:
-        stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules)
-    if not stop_payload['nextArrivals']:
-        seen_services: set[tuple[str, str]] = set()
-        fallback_arrivals = []
-        for arrival in scheduled_arrivals:
-            route_id = str(arrival.get('routeId') or arrival.get('serviceId') or 'Unknown').strip()
-            direction = str(arrival.get('direction') or '').strip()
-            service = route_labels.get(route_id) or route_id
-            service_key = (normalize_tracking_key(service), direction)
-            if service_key in seen_services:
-                continue
-            seen_services.add(service_key)
-            fallback_arrivals.append(
-                {
-                    'service': service,
-                    'fleetNumber': 'No live fleet',
-                    'direction': direction or None,
-                    'countdownSeconds': arrival.get('countdownSeconds'),
-                    'countdownLabel': arrival.get('countdownLabel'),
-                    'source': 'scheduled',
-                }
-            )
-        stop_payload['nextArrivals'] = fallback_arrivals
+        stop_payload['nextArrivals'] = build_live_stop_arrivals(stop, live_vehicles, trip_schedules, max_results=6)
     return jsonify(
         {
             'ok': True,
             'stop': stop_payload,
+            'refreshedAt': now.isoformat(),
         }
     )
 
