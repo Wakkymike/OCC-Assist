@@ -2930,7 +2930,9 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
             )
 
         service_ref_for_file = str(root.findtext('.//tx:Service/tx:ServiceCode', default='', namespaces=tx_ns) or '').strip()
-        if service_ref_for_file:
+        # Mon-Fri/Sat/Sun variants of a service share one ServiceCode across files, so scope per file.
+        scoped_service_id = scoped(service_ref_for_file)
+        if scoped_service_id:
             operating_profile = root.find('.//tx:Service/tx:OperatingProfile', tx_ns)
             if operating_profile is not None:
                 days_node = operating_profile.find('tx:RegularDayType/tx:DaysOfWeek', tx_ns)
@@ -2938,15 +2940,15 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                     for day_element in days_node:
                         day_name = day_element.tag.split('}')[-1].strip().lower()
                         if day_name in GTFS_WEEKDAY_COLUMNS:
-                            service_days.setdefault(service_ref_for_file, set()).add(day_name)
+                            service_days.setdefault(scoped_service_id, set()).add(day_name)
                         elif day_name in TRANSXCHANGE_DAY_GROUPS:
-                            service_days.setdefault(service_ref_for_file, set()).update(TRANSXCHANGE_DAY_GROUPS[day_name])
+                            service_days.setdefault(scoped_service_id, set()).update(TRANSXCHANGE_DAY_GROUPS[day_name])
             period = root.find('.//tx:Service/tx:OperatingPeriod', tx_ns)
             if period is not None:
                 start_text = str(period.findtext('tx:StartDate', default='', namespaces=tx_ns) or '').strip()
                 end_text = str(period.findtext('tx:EndDate', default='', namespaces=tx_ns) or '').strip()
                 if start_text:
-                    service_periods[service_ref_for_file] = (start_text, end_text)
+                    service_periods[scoped_service_id] = (start_text, end_text)
 
         current_sections = extract_transxchange_section_sequences(root, tx_ns)
         for section_id, links in current_sections.items():
@@ -3001,7 +3003,7 @@ def convert_transxchange_directory_to_gtfs(extracted_dir: Path) -> bool:
                     'tripId': trip_id,
                     'journeyPatternRef': jp_ref,
                     'departureTime': departure_time,
-                    'serviceRef': service_ref or route_id or raw_jp_ref,
+                    'serviceRef': scoped(service_ref or route_id or raw_jp_ref),
                     'timingOverrides': timing_overrides,
                     'journeyCode': journey_code,
                     'destinationDisplay': trip_destination,
