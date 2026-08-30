@@ -2363,8 +2363,8 @@ def build_stop_departure_board(
             expected_seconds = max(0, scheduled_seconds + delay_seconds)
             expected_at = reference_now + timedelta(seconds=expected_seconds)
             service = (
-                str(vehicle.get('service') or '').strip()
-                or route_labels.get(route_id)
+                route_labels.get(route_id)
+                or str(vehicle.get('service') or '').strip()
                 or route_id
                 or 'Unknown'
             )
