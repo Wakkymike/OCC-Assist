@@ -1612,6 +1612,27 @@ body.driving-hours-active .shell {
   margin-top: 20px;
 }
 
+.roadworks-upload-card {
+  margin-top: 20px;
+}
+
+.roadworks-popup {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+  color: #16202c;
+}
+
+.roadworks-popup-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.roadworks-popup-line {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
 .gtfs-upload-form {
   display: grid;
   gap: 12px;

@@ -140,5 +140,22 @@
         <p id="gtfs-manual-lock-summary" class="map-note">Manual upload lock is ON.</p>
       <div id="gtfs-upload-message" class="message" aria-live="polite"></div>
     </section>
+
+    <section class="admin-card roadworks-upload-card">
+      <div class="section-row">
+        <h2>Roadworks (CSV)</h2>
+        <button class="btn secondary compact" type="button" id="refresh-roadworks-status">Refresh status</button>
+      </div>
+      <p class="section-copy">Upload a CSV of current roadworks. Each row needs a latitude and longitude, plus a severity or RAG rating used to colour the marker on the tracking map (red/amber/green). Uploading a new file replaces all previously uploaded roadworks.</p>
+      <form id="roadworks-upload-form" class="gtfs-upload-form" enctype="multipart/form-data" novalidate>
+        <div class="field">
+          <label for="roadworks-file">Roadworks CSV file</label>
+          <input type="file" id="roadworks-file" name="roadworksCsvFile" accept=".csv" required />
+        </div>
+        <button class="btn primary" type="submit">Upload roadworks</button>
+      </form>
+      <p id="roadworks-upload-summary" class="map-note"></p>
+      <div id="roadworks-upload-message" class="message" aria-live="polite"></div>
+    </section>
   </section>
 {% endblock %}

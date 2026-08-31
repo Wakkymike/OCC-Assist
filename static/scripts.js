@@ -159,6 +159,7 @@ function initializeMap() {
   const directionSelect = document.querySelector('#static-direction-select');
   const routeStatus = document.querySelector('#map-route-status');
   const stopToggle = document.querySelector('#bus-stops-toggle');
+  const roadworksToggle = document.querySelector('#roadworks-toggle');
   const trackingApp = document.querySelector('#tracking-app');
   const sidebarEmpty = document.querySelector('#tracking-sidebar-empty');
   const sidebarPanel = document.querySelector('#tracking-sidebar-panel');
@@ -214,6 +215,7 @@ function initializeMap() {
 
   const initializeOverlays = () => {
     loadTrackingStops();
+    loadTrackingRoadworks();
     startVehicleRefresh();
     loadStaticRoutes();
     window.requestAnimationFrame(() => {
@@ -320,6 +322,14 @@ function initializeMap() {
     let stopCountdownIntervalId = null;
     const emptyRouteFeatureCollection = { type: 'FeatureCollection', features: [] };
     const emptyStopFeatureCollection = { type: 'FeatureCollection', features: [] };
+    let roadworksFeatureCollection = { type: 'FeatureCollection', features: [] };
+    let roadworksFeaturesLoaded = false;
+    const roadworksSourceId = 'gnw-roadworks-overlay-source';
+    const roadworksLayerId = 'gnw-roadworks-overlay';
+    const roadworksHitLayerId = 'gnw-roadworks-overlay-hit-area';
+    let roadworksInteractionsBound = false;
+    let roadworksPopup = null;
+    const emptyRoadworksFeatureCollection = { type: 'FeatureCollection', features: [] };
 
     const normalizeFleetKey = (fleetNumber) => String(fleetNumber || '').trim().toLowerCase();
 
@@ -766,6 +776,65 @@ function initializeMap() {
       stopInteractionsBound = true;
     };
 
+    const ragColorExpression = ['match', ['get', 'rag'], 'red', '#ff4d4d', 'amber', '#ffb020', 'green', '#2ecc71', '#ffb020'];
+
+    const ensureRoadworksOverlayLayers = () => {
+      if (!map.getSource(roadworksSourceId)) {
+        map.addSource(roadworksSourceId, { type: 'geojson', data: emptyRoadworksFeatureCollection });
+        map.addLayer({ id: roadworksHitLayerId, type: 'circle', source: roadworksSourceId, paint: { 'circle-radius': 16, 'circle-color': '#ffffff', 'circle-opacity': 0.01 } });
+        map.addLayer({
+          id: roadworksLayerId,
+          type: 'circle',
+          source: roadworksSourceId,
+          paint: {
+            'circle-color': ragColorExpression,
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3.6, 12, 5.4, 15, 7.4],
+            'circle-stroke-color': '#111417',
+            'circle-stroke-width': 1.5,
+            'circle-opacity': 0.9,
+          },
+        });
+      }
+      if (roadworksInteractionsBound) return;
+
+      map.on('click', roadworksHitLayerId, (event) => {
+        const feature = event.features?.[0];
+        if (!feature) return;
+        showRoadworksPopup(feature);
+      });
+      map.on('mouseenter', roadworksHitLayerId, () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', roadworksHitLayerId, () => {
+        map.getCanvas().style.cursor = '';
+      });
+      roadworksInteractionsBound = true;
+    };
+
+    const showRoadworksPopup = (feature) => {
+      const properties = feature.properties || {};
+      const ragClass = { red: 'red', amber: 'yellow', green: 'green' }[properties.rag] || 'neutral';
+      const dateRange = [properties.startDate, properties.endDate].filter(Boolean).join(' to ');
+      const html = `
+        <div class="roadworks-popup">
+          <p class="roadworks-popup-title">${escapeHtml(String(properties.title || 'Roadworks'))}</p>
+          <span class="sidebar-pill punctuality-pill ${ragClass}">${escapeHtml(String(properties.severity || 'Unknown'))}</span>
+          <p class="roadworks-popup-line">Status: ${escapeHtml(String(properties.status || 'Unknown'))}</p>
+          ${dateRange ? `<p class="roadworks-popup-line">${escapeHtml(dateRange)}</p>` : ''}
+          ${properties.promoter ? `<p class="roadworks-popup-line">Promoter: ${escapeHtml(String(properties.promoter))}</p>` : ''}
+          ${properties.impact ? `<p class="roadworks-popup-line">${escapeHtml(String(properties.impact))}</p>` : ''}
+          <p class="roadworks-popup-line">Reference: ${escapeHtml(String(properties.reference || 'Unknown'))}</p>
+        </div>
+      `;
+      if (roadworksPopup) {
+        roadworksPopup.remove();
+      }
+      roadworksPopup = new mapboxgl.Popup({ closeButton: true, closeOnClick: true })
+        .setLngLat(feature.geometry.coordinates)
+        .setHTML(html)
+        .addTo(map);
+    };
+
     const applyRouteOverlay = (featureCollection, showOverlay) => {
       if (!canRenderMapOverlays()) return;
       ensureRouteOverlayLayers();
@@ -786,6 +855,17 @@ function initializeMap() {
       const visibility = showOverlay ? 'visible' : 'none';
       if (map.getLayer(stopHitLayerId)) map.setLayoutProperty(stopHitLayerId, 'visibility', visibility);
       if (map.getLayer(stopLayerId)) map.setLayoutProperty(stopLayerId, 'visibility', visibility);
+    };
+
+    const applyRoadworksOverlay = (featureCollection, showOverlay) => {
+      if (!canRenderMapOverlays()) return;
+      ensureRoadworksOverlayLayers();
+      const source = map.getSource(roadworksSourceId);
+      if (!source) return;
+      source.setData(showOverlay ? featureCollection : emptyRoadworksFeatureCollection);
+      const visibility = showOverlay ? 'visible' : 'none';
+      if (map.getLayer(roadworksHitLayerId)) map.setLayoutProperty(roadworksHitLayerId, 'visibility', visibility);
+      if (map.getLayer(roadworksLayerId)) map.setLayoutProperty(roadworksLayerId, 'visibility', visibility);
     };
 
     const updateRouteOptions = (routes, selectedRouteValue) => {
@@ -826,6 +906,43 @@ function initializeMap() {
         stopFeaturesLoaded = false;
         applyStopOverlay(emptyStopFeatureCollection, false);
         if (stopToggle) stopToggle.disabled = true;
+      }
+    };
+
+    const loadTrackingRoadworks = async () => {
+      if (!window.OCC_ASSIST.trackingRoadworksUrl) return;
+      try {
+        const response = await fetch(window.OCC_ASSIST.trackingRoadworksUrl, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load roadworks data.');
+        const roadworks = payload.roadworks || [];
+        roadworksFeatureCollection = {
+          type: 'FeatureCollection',
+          features: roadworks.map((item) => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [item.longitude, item.latitude] },
+            properties: {
+              id: item.id,
+              reference: item.reference,
+              title: item.title,
+              severity: item.severity,
+              status: item.status,
+              rag: item.rag,
+              startDate: item.startDate,
+              endDate: item.endDate,
+              promoter: item.promoter,
+              impact: item.impact,
+            },
+          })),
+        };
+        roadworksFeaturesLoaded = true;
+        if (roadworksToggle) roadworksToggle.disabled = false;
+        applyRoadworksOverlay(roadworksFeatureCollection, Boolean(roadworksToggle?.checked ?? true));
+      } catch (error) {
+        roadworksFeatureCollection = emptyRoadworksFeatureCollection;
+        roadworksFeaturesLoaded = false;
+        applyRoadworksOverlay(emptyRoadworksFeatureCollection, false);
+        if (roadworksToggle) roadworksToggle.disabled = true;
       }
     };
 
@@ -1032,6 +1149,16 @@ function initializeMap() {
           return;
         }
         applyStopOverlay(stopFeatureCollection, stopToggle.checked);
+      });
+    }
+
+    if (roadworksToggle) {
+      roadworksToggle.addEventListener('change', () => {
+        if (!roadworksFeaturesLoaded) {
+          loadTrackingRoadworks();
+          return;
+        }
+        applyRoadworksOverlay(roadworksFeatureCollection, roadworksToggle.checked);
       });
     }
 
@@ -2177,6 +2304,11 @@ function initializeUsersPage() {
   const gtfsUploadSummary = document.querySelector('#gtfs-upload-summary');
   const refreshGtfsStatusButton = document.querySelector('#refresh-gtfs-status');
     const toggleGtfsManualLockButton = document.querySelector('#toggle-gtfs-manual-lock');
+  const roadworksUploadForm = document.querySelector('#roadworks-upload-form');
+  const roadworksFileInput = document.querySelector('#roadworks-file');
+  const roadworksUploadMessage = document.querySelector('#roadworks-upload-message');
+  const roadworksUploadSummary = document.querySelector('#roadworks-upload-summary');
+  const refreshRoadworksStatusButton = document.querySelector('#refresh-roadworks-status');
   const refreshAdminDataStatusButton = document.querySelector('#refresh-admin-data-status');
   const adminDataLastCheck = document.querySelector('#admin-data-last-check');
   const adminBodsStatus = document.querySelector('#admin-bods-status');
@@ -2338,6 +2470,29 @@ function initializeUsersPage() {
             : 'Manual upload lock is OFF. Auto-download updates are allowed.';
         }
       }
+  };
+
+
+  const loadRoadworksStatus = async () => {
+    if (!window.OCC_ASSIST.roadworksStatusUrl || !roadworksUploadSummary) {
+      return;
+    }
+
+    const response = await fetch(window.OCC_ASSIST.roadworksStatusUrl, { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || 'Unable to load roadworks status.');
+    }
+
+    if (!payload.configured) {
+      roadworksUploadSummary.textContent = 'No roadworks CSV uploaded yet.';
+      return;
+    }
+
+    const uploadedAt = payload.uploadedAt ? new Date(payload.uploadedAt).toLocaleString() : 'Unknown';
+    const filename = payload.originalFilename || 'Uploaded file';
+    const ragCounts = payload.ragCounts || {};
+    roadworksUploadSummary.textContent = `${payload.roadworksCount} roadworks available from ${filename} (uploaded ${uploadedAt}). Red: ${Number(ragCounts.red || 0)}, amber: ${Number(ragCounts.amber || 0)}, green: ${Number(ragCounts.green || 0)}.`;
   };
 
 
@@ -2821,6 +2976,45 @@ function initializeUsersPage() {
       }
   }
 
+  if (roadworksUploadForm && roadworksFileInput && roadworksUploadMessage && roadworksUploadSummary) {
+    roadworksUploadForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      const file = roadworksFileInput.files && roadworksFileInput.files[0] ? roadworksFileInput.files[0] : null;
+      if (!file) {
+        setMessage(roadworksUploadMessage, 'Choose a roadworks CSV file before uploading.', 'error');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('roadworksCsvFile', file);
+      setMessage(roadworksUploadMessage, 'Uploading roadworks CSV...');
+
+      const response = await fetch(window.OCC_ASSIST.roadworksUploadUrl, {
+        method: 'POST',
+        body: formData,
+      });
+      const payload = await response.json();
+
+      if (!response.ok || !payload.ok) {
+        setMessage(roadworksUploadMessage, payload.message || 'Unable to upload roadworks CSV file.', 'error');
+        return;
+      }
+
+      setMessage(roadworksUploadMessage, `Upload complete. ${payload.roadworksCount} roadworks loaded, replacing any previous upload.`, 'success');
+      roadworksUploadForm.reset();
+      await loadRoadworksStatus();
+    });
+
+    if (refreshRoadworksStatusButton) {
+      refreshRoadworksStatusButton.addEventListener('click', () => {
+        loadRoadworksStatus().catch((error) => {
+          setMessage(roadworksUploadMessage, error.message || 'Unable to refresh roadworks status.', 'error');
+        });
+      });
+    }
+  }
+
   loadUsers();
   if (contactsAdminList) {
     loadContactsAdmin().catch((error) => {
@@ -2833,6 +3027,13 @@ function initializeUsersPage() {
     loadGtfsStatus().catch((error) => {
       if (gtfsUploadMessage) {
         setMessage(gtfsUploadMessage, error.message || 'Unable to load GTFS status.', 'error');
+      }
+    });
+  }
+  if (roadworksUploadSummary) {
+    loadRoadworksStatus().catch((error) => {
+      if (roadworksUploadMessage) {
+        setMessage(roadworksUploadMessage, error.message || 'Unable to load roadworks status.', 'error');
       }
     });
   }

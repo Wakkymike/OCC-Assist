@@ -68,6 +68,22 @@ DATA_HEALTH_STATUS_PATH = INSTANCE_DIR / 'data-health-status.json'
 AUTO_DATA_CHECK_INTERVAL_SECONDS = int(os.environ.get('OCC_ASSIST_AUTO_DATA_CHECK_INTERVAL_SECONDS', '900'))
 GTFS_AUTO_DOWNLOAD_URL = str(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_URL', '')).strip()
 GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS = int(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS', '45'))
+ROADWORKS_DIR = INSTANCE_DIR / 'roadworks'
+ROADWORKS_CSV_PATH = ROADWORKS_DIR / 'latest-roadworks.csv'
+ROADWORKS_CACHE_PATH = ROADWORKS_DIR / 'roadworks-cache.json'
+ROADWORKS_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_ROADWORKS_MAX_UPLOAD_BYTES', '5000000'))
+ROADWORKS_FIELD_ALIASES = {
+    'reference': ('reference', 'id', 'roadworks_id', 'ref', 'usrn'),
+    'title': ('title', 'description', 'location', 'name', 'street', 'location_description'),
+    'latitude': ('latitude', 'lat'),
+    'longitude': ('longitude', 'lon', 'lng', 'long'),
+    'severity': ('severity', 'rag', 'rag_rating', 'priority', 'severity_level'),
+    'status': ('status', 'state', 'works_status'),
+    'start_date': ('start_date', 'start', 'startdate', 'from', 'proposed_start_date'),
+    'end_date': ('end_date', 'end', 'enddate', 'to', 'proposed_end_date'),
+    'promoter': ('promoter', 'organisation', 'organization', 'company', 'promoter_organisation'),
+    'impact': ('impact', 'details', 'notes', 'comments', 'traffic_management'),
+}
 BODS_TIMETABLE_NOC = str(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_NOC', 'GONW')).strip().upper()
 BODS_TIMETABLE_LIMIT = int(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_LIMIT', '100'))
 TRANSXCHANGE_MAX_FILES = int(os.environ.get('OCC_ASSIST_TRANSXCHANGE_MAX_FILES', '180'))
@@ -577,6 +593,9 @@ def inject_user_context() -> dict[str, object]:
         'admin_data_status_url': url_for('admin_data_status'),
         'admin_contacts_encryption_status_url': url_for('admin_contacts_encryption_status'),
         'admin_gtfs_manual_lock_url': url_for('admin_gtfs_manual_lock'),
+        'tracking_roadworks_url': url_for('tracking_roadworks'),
+        'roadworks_status_url': url_for('roadworks_status'),
+        'roadworks_upload_url': url_for('upload_roadworks'),
     }
 
 
@@ -2791,6 +2810,100 @@ def ensure_gtfs_cache_stops(cache: dict[str, object] | None) -> dict[str, object
     return updated_cache
 
 
+def _lookup_roadworks_field(row: dict[str, str], field: str) -> str:
+    for alias in ROADWORKS_FIELD_ALIASES.get(field, ()):
+        for key, value in row.items():
+            if str(key or '').strip().lower() == alias and str(value or '').strip():
+                return str(value).strip()
+    return ''
+
+
+def normalize_roadworks_rag(severity: str, status: str) -> str:
+    """Derive a red/amber/green rating from free-text severity or status values."""
+    severity_text = str(severity or '').strip().lower()
+    status_text = str(status or '').strip().lower()
+    if any(token in severity_text for token in ('red', 'severe', 'high', 'major', 'critical')):
+        return 'red'
+    if any(token in severity_text for token in ('amber', 'medium', 'moderate')):
+        return 'amber'
+    if any(token in severity_text for token in ('green', 'low', 'minor')):
+        return 'green'
+    if any(token in status_text for token in ('complete', 'closed', 'cancelled', 'canceled', 'finished')):
+        return 'green'
+    return 'amber'
+
+
+def parse_roadworks_csv(raw_bytes: bytes) -> list[dict[str, object]]:
+    try:
+        text = raw_bytes.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = raw_bytes.decode('latin-1')
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise ValueError('The CSV file has no header row.')
+
+    entries: list[dict[str, object]] = []
+    for index, row in enumerate(reader, start=1):
+        latitude_raw = _lookup_roadworks_field(row, 'latitude')
+        longitude_raw = _lookup_roadworks_field(row, 'longitude')
+        try:
+            latitude = float(latitude_raw)
+            longitude = float(longitude_raw)
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            continue
+
+        severity = _lookup_roadworks_field(row, 'severity')
+        status = _lookup_roadworks_field(row, 'status')
+        reference = _lookup_roadworks_field(row, 'reference') or f'ROW-{index}'
+        title = _lookup_roadworks_field(row, 'title') or 'Roadworks'
+
+        entries.append({
+            'id': reference,
+            'reference': reference,
+            'title': title,
+            'latitude': latitude,
+            'longitude': longitude,
+            'severity': severity or 'Unknown',
+            'status': status or 'Unknown',
+            'rag': normalize_roadworks_rag(severity, status),
+            'startDate': _lookup_roadworks_field(row, 'start_date'),
+            'endDate': _lookup_roadworks_field(row, 'end_date'),
+            'promoter': _lookup_roadworks_field(row, 'promoter'),
+            'impact': _lookup_roadworks_field(row, 'impact'),
+        })
+
+    if not entries:
+        raise ValueError('No valid roadworks rows were found. Ensure the CSV includes latitude and longitude columns.')
+
+    return entries
+
+
+def save_roadworks_data(csv_bytes: bytes, entries: list[dict[str, object]], original_filename: str) -> dict[str, object]:
+    ROADWORKS_DIR.mkdir(parents=True, exist_ok=True)
+    # Overwriting both files means the previous upload's roadworks never persist.
+    ROADWORKS_CSV_PATH.write_bytes(csv_bytes)
+    payload = {
+        'uploadedAt': datetime.now(timezone.utc).isoformat(),
+        'originalFilename': original_filename,
+        'roadworksCount': len(entries),
+        'roadworks': entries,
+    }
+    ROADWORKS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
+    return payload
+
+
+def load_roadworks_cache() -> dict[str, object]:
+    if not ROADWORKS_CACHE_PATH.exists():
+        return {'roadworks': [], 'roadworksCount': 0, 'uploadedAt': '', 'originalFilename': ''}
+    try:
+        return json.loads(ROADWORKS_CACHE_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {'roadworks': [], 'roadworksCount': 0, 'uploadedAt': '', 'originalFilename': ''}
+
+
 def unzip_gtfs_archive(zip_bytes: bytes) -> Path:
     GTFS_DIR.mkdir(parents=True, exist_ok=True)
     if GTFS_EXTRACT_DIR.exists():
@@ -4011,6 +4124,77 @@ def upload_gtfs():
             'routeCount': int(cache_payload.get('routeCount', 0)),
             'uploadedAt': cache_payload.get('uploadedAt', ''),
             'originalFilename': cache_payload.get('originalFilename', ''),
+        }
+    )
+
+
+@app.post('/api/roadworks/upload')
+@login_required('admin_privileges')
+def upload_roadworks():
+    file = request.files.get('roadworksCsvFile')
+    if file is None or not file.filename:
+        return jsonify({'ok': False, 'message': 'Select a roadworks CSV file to upload.'}), 400
+
+    raw = file.stream.read(ROADWORKS_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > ROADWORKS_MAX_UPLOAD_BYTES:
+        return jsonify({'ok': False, 'message': 'The file is too large.'}), 413
+
+    try:
+        entries = parse_roadworks_csv(raw)
+    except ValueError as error:
+        return jsonify({'ok': False, 'message': str(error)}), 400
+
+    cache_payload = save_roadworks_data(raw, entries, file.filename)
+    rag_counts = {'red': 0, 'amber': 0, 'green': 0}
+    for entry in entries:
+        rag = str(entry.get('rag') or 'amber')
+        rag_counts[rag] = rag_counts.get(rag, 0) + 1
+
+    return jsonify(
+        {
+            'ok': True,
+            'roadworksCount': int(cache_payload.get('roadworksCount', 0)),
+            'uploadedAt': cache_payload.get('uploadedAt', ''),
+            'originalFilename': cache_payload.get('originalFilename', ''),
+            'ragCounts': rag_counts,
+        }
+    )
+
+
+@app.get('/api/roadworks/status')
+@login_required('admin_privileges')
+def roadworks_status():
+    cache = load_roadworks_cache()
+    entries = cache.get('roadworks') or []
+    rag_counts = {'red': 0, 'amber': 0, 'green': 0}
+    for entry in entries:
+        rag = str(entry.get('rag') or 'amber')
+        rag_counts[rag] = rag_counts.get(rag, 0) + 1
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': bool(entries),
+            'roadworksCount': len(entries),
+            'uploadedAt': cache.get('uploadedAt', ''),
+            'originalFilename': cache.get('originalFilename', ''),
+            'ragCounts': rag_counts,
+        }
+    )
+
+
+@app.get('/api/tracking/roadworks')
+@login_required('tracking')
+def tracking_roadworks():
+    cache = load_roadworks_cache()
+    entries = cache.get('roadworks') or []
+    return jsonify(
+        {
+            'ok': True,
+            'configured': bool(entries),
+            'roadworks': entries,
+            'roadworksCount': len(entries),
+            'uploadedAt': cache.get('uploadedAt', ''),
         }
     )
 
