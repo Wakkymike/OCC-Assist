@@ -143,19 +143,15 @@
 
     <section class="admin-card roadworks-upload-card">
       <div class="section-row">
-        <h2>Roadworks (CSV)</h2>
+        <h2>Roadworks feed (Street Manager)</h2>
         <button class="btn secondary compact" type="button" id="refresh-roadworks-status">Refresh status</button>
       </div>
-      <p class="section-copy">Upload a CSV of current roadworks. Each row needs a latitude/longitude or British National Grid easting/northing pair, plus a severity or RAG rating used to colour the marker on the tracking map (red/amber/green). Uploading a new file replaces all previously uploaded roadworks.</p>
-      <form id="roadworks-upload-form" class="gtfs-upload-form" enctype="multipart/form-data" novalidate>
-        <div class="field">
-          <label for="roadworks-file">Roadworks CSV file</label>
-          <input type="file" id="roadworks-file" name="roadworksCsvFile" accept=".csv" required />
-        </div>
-        <button class="btn primary" type="submit">Upload roadworks</button>
-      </form>
+      <p class="section-copy">Roadworks update live via the Department for Transport's Street Manager Open Data push notifications. To enable this, <a href="https://www.gov.uk/guidance/find-and-use-roadworks-data" target="_blank" rel="noopener">register for a free Open Data account</a> and give them the webhook URL below as your endpoint. Only roadworks matched to a known route are kept, and each event fully replaces that roadwork's previous details.</p>
+      <p class="map-note">Webhook URL: <code id="roadworks-webhook-url">Loading...</code></p>
+      <div id="roadworks-subscription-list" class="contacts-admin-list"></div>
       <p id="roadworks-upload-summary" class="map-note"></p>
       <div id="roadworks-upload-message" class="message" aria-live="polite"></div>
+      <button class="btn secondary compact" type="button" id="clear-roadworks">Clear all roadworks</button>
     </section>
   </section>
 {% endblock %}

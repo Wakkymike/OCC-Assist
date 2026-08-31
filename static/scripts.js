@@ -59,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeUsersPage();
   initializeMap();
   initializeServiceOverview();
+  initializeRoadworksPage();
   initializeDrivingHours();
   initializeDailyOverview();
   initializeSettingsPage();
@@ -820,10 +821,11 @@ function initializeMap() {
           <p class="roadworks-popup-title">${escapeHtml(String(properties.title || 'Roadworks'))}</p>
           <span class="sidebar-pill punctuality-pill ${ragClass}">${escapeHtml(String(properties.severity || 'Unknown'))}</span>
           <p class="roadworks-popup-line">Status: ${escapeHtml(String(properties.status || 'Unknown'))}</p>
+          ${properties.routeLabels ? `<p class="roadworks-popup-line">Affects route(s): ${escapeHtml(String(properties.routeLabels))}</p>` : ''}
           ${dateRange ? `<p class="roadworks-popup-line">${escapeHtml(dateRange)}</p>` : ''}
           ${properties.promoter ? `<p class="roadworks-popup-line">Promoter: ${escapeHtml(String(properties.promoter))}</p>` : ''}
           ${properties.impact ? `<p class="roadworks-popup-line">${escapeHtml(String(properties.impact))}</p>` : ''}
-          <p class="roadworks-popup-line">Reference: ${escapeHtml(String(properties.reference || 'Unknown'))}</p>
+          <p class="roadworks-popup-line">Permit reference: ${escapeHtml(String(properties.reference || 'Unknown'))}</p>
         </div>
       `;
       if (roadworksPopup) {
@@ -924,6 +926,7 @@ function initializeMap() {
             properties: {
               id: item.id,
               reference: item.reference,
+              worksReference: item.worksReference,
               title: item.title,
               severity: item.severity,
               status: item.status,
@@ -932,6 +935,7 @@ function initializeMap() {
               endDate: item.endDate,
               promoter: item.promoter,
               impact: item.impact,
+              routeLabels: Array.isArray(item.routeLabels) ? item.routeLabels.join(', ') : '',
             },
           })),
         };
@@ -1321,6 +1325,131 @@ function initializeServiceOverview() {
 
   refreshButton.addEventListener('click', refreshOverview);
   refreshOverview();
+}
+
+function initializeRoadworksPage() {
+  const app = document.querySelector('#roadworks-app');
+  const searchInput = document.querySelector('#roadworks-page-search');
+  const refreshButton = document.querySelector('#refresh-roadworks-page');
+  const statusEl = document.querySelector('#roadworks-page-status');
+  const routeCountEl = document.querySelector('#roadworks-page-route-count');
+  const roadworksCountEl = document.querySelector('#roadworks-page-count');
+  const updatedEl = document.querySelector('#roadworks-page-updated');
+  const listEl = document.querySelector('#roadworks-page-list');
+
+  if (!app || !listEl) {
+    return;
+  }
+
+  let routeGroupsCache = [];
+
+  const ragPillClass = (rag) => ({ red: 'red', amber: 'yellow', green: 'green' }[rag] || 'neutral');
+
+  const renderGroups = (groups) => {
+    if (!groups.length) {
+      listEl.innerHTML = '<p class="saved-empty">No roadworks match your search.</p>';
+      return;
+    }
+
+    listEl.innerHTML = groups.map((group) => {
+      const roadworksMarkup = group.roadworks.map((item) => {
+        const dateRange = [item.startDate, item.endDate].filter(Boolean).join(' to ');
+        return `
+          <article class="service-card">
+            <div class="service-card-head">
+              <div>
+                <p class="service-card-route">${escapeHtml(String(item.title || 'Roadworks'))}</p>
+                <strong>${escapeHtml(String(item.promoter || 'Unknown promoter'))}</strong>
+              </div>
+              <span class="sidebar-pill punctuality-pill ${ragPillClass(item.rag)}">${escapeHtml(String(item.severity || 'Unknown'))}</span>
+            </div>
+            <dl class="service-detail-list">
+              <div><dt>Permit reference</dt><dd>${escapeHtml(String(item.reference || 'Unknown'))}</dd></div>
+              <div><dt>Status</dt><dd>${escapeHtml(String(item.status || 'Unknown'))}</dd></div>
+              ${dateRange ? `<div><dt>Dates</dt><dd>${escapeHtml(dateRange)}</dd></div>` : ''}
+              ${item.impact ? `<div><dt>Details</dt><dd>${escapeHtml(String(item.impact))}</dd></div>` : ''}
+            </dl>
+          </article>
+        `;
+      }).join('');
+
+      return `
+        <section class="service-group" data-route-group="${escapeHtml(group.routeId)}">
+          <header class="service-group-head">
+            <div>
+              <p class="brand-subtitle">Route ${escapeHtml(group.routeLabel)}</p>
+              <h2>${escapeHtml(group.routeLabel)}</h2>
+            </div>
+            <div class="service-group-actions">
+              <span class="service-count-pill">${group.roadworks.length} roadwork${group.roadworks.length === 1 ? '' : 's'}</span>
+              <button type="button" class="service-group-toggle" aria-expanded="true" aria-label="Collapse route ${escapeHtml(group.routeLabel)}">
+                <span class="chevron">▾</span>
+              </button>
+            </div>
+          </header>
+          <div class="service-group-list">${roadworksMarkup}</div>
+        </section>
+      `;
+    }).join('');
+  };
+
+  const applySearch = () => {
+    const query = String(searchInput?.value || '').trim().toLowerCase();
+    const filtered = query
+      ? routeGroupsCache.filter((group) => group.routeLabel.toLowerCase().includes(query) || group.routeId.toLowerCase().includes(query))
+      : routeGroupsCache;
+    renderGroups(filtered);
+  };
+
+  const refreshRoadworksPage = async () => {
+    if (!window.OCC_ASSIST.roadworksByRouteUrl) {
+      setMessage(statusEl, 'Roadworks API is not configured.', 'error');
+      return;
+    }
+    try {
+      const response = await fetch(window.OCC_ASSIST.roadworksByRouteUrl, { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to load roadworks.');
+
+      routeGroupsCache = payload.routeGroups || [];
+      routeCountEl.textContent = String(routeGroupsCache.length);
+      roadworksCountEl.textContent = String(payload.roadworksCount || 0);
+      updatedEl.textContent = payload.fetchedAt ? formatFeedTime(payload.fetchedAt) : 'Never';
+
+      if (!payload.configured) {
+        setMessage(statusEl, 'No roadworks feed URL is configured.', 'error');
+      } else {
+        setMessage(statusEl, `Loaded ${payload.roadworksCount || 0} roadworks across ${routeGroupsCache.length} route${routeGroupsCache.length === 1 ? '' : 's'}.`, 'success');
+      }
+      applySearch();
+    } catch (error) {
+      setMessage(statusEl, error.message || 'Unable to load roadworks.', 'error');
+      listEl.innerHTML = '<p class="saved-empty">Unable to load roadworks right now.</p>';
+    }
+  };
+
+  listEl.addEventListener('click', (event) => {
+    const toggle = event.target.closest('.service-group-toggle');
+    if (!toggle) {
+      return;
+    }
+    const group = toggle.closest('.service-group');
+    if (!group) {
+      return;
+    }
+    const willCollapse = !group.classList.contains('is-collapsed');
+    group.classList.toggle('is-collapsed', willCollapse);
+    toggle.setAttribute('aria-expanded', willCollapse ? 'false' : 'true');
+  });
+
+  if (searchInput) {
+    searchInput.addEventListener('input', applySearch);
+  }
+  if (refreshButton) {
+    refreshButton.addEventListener('click', refreshRoadworksPage);
+  }
+
+  refreshRoadworksPage();
 }
 
 function formatFeedTime(value) {
@@ -2304,11 +2433,12 @@ function initializeUsersPage() {
   const gtfsUploadSummary = document.querySelector('#gtfs-upload-summary');
   const refreshGtfsStatusButton = document.querySelector('#refresh-gtfs-status');
     const toggleGtfsManualLockButton = document.querySelector('#toggle-gtfs-manual-lock');
-  const roadworksUploadForm = document.querySelector('#roadworks-upload-form');
-  const roadworksFileInput = document.querySelector('#roadworks-file');
   const roadworksUploadMessage = document.querySelector('#roadworks-upload-message');
   const roadworksUploadSummary = document.querySelector('#roadworks-upload-summary');
   const refreshRoadworksStatusButton = document.querySelector('#refresh-roadworks-status');
+  const roadworksWebhookUrlEl = document.querySelector('#roadworks-webhook-url');
+  const roadworksSubscriptionList = document.querySelector('#roadworks-subscription-list');
+  const clearRoadworksButton = document.querySelector('#clear-roadworks');
   const refreshAdminDataStatusButton = document.querySelector('#refresh-admin-data-status');
   const adminDataLastCheck = document.querySelector('#admin-data-last-check');
   const adminBodsStatus = document.querySelector('#admin-bods-status');
@@ -2484,15 +2614,25 @@ function initializeUsersPage() {
       throw new Error(payload.message || 'Unable to load roadworks status.');
     }
 
-    if (!payload.configured) {
-      roadworksUploadSummary.textContent = 'No roadworks CSV uploaded yet.';
-      return;
+    if (roadworksWebhookUrlEl) {
+      roadworksWebhookUrlEl.textContent = payload.webhookUrl || 'Unavailable';
     }
 
-    const uploadedAt = payload.uploadedAt ? new Date(payload.uploadedAt).toLocaleString() : 'Unknown';
-    const filename = payload.originalFilename || 'Uploaded file';
+    if (roadworksSubscriptionList) {
+      const subscriptions = payload.subscriptions || [];
+      roadworksSubscriptionList.innerHTML = subscriptions.map((sub) => {
+        const confirmed = Boolean(sub.confirmedAt);
+        const confirmedAt = confirmed ? new Date(sub.confirmedAt).toLocaleString() : 'Not yet confirmed';
+        return `<p class="message ${confirmed ? 'success' : ''}">${escapeHtml(sub.label)}: ${escapeHtml(confirmedAt)}</p>`;
+      }).join('') || '<p class="saved-empty">No subscriptions confirmed yet.</p>';
+    }
+
+    const lastEventAt = payload.lastEventAt ? new Date(payload.lastEventAt).toLocaleString() : 'Never';
     const ragCounts = payload.ragCounts || {};
-    roadworksUploadSummary.textContent = `${payload.roadworksCount} roadworks available from ${filename} (uploaded ${uploadedAt}). Red: ${Number(ragCounts.red || 0)}, amber: ${Number(ragCounts.amber || 0)}, green: ${Number(ragCounts.green || 0)}.`;
+    roadworksUploadSummary.textContent = `${payload.roadworksCount} roadworks affecting known routes, from ${Number(payload.eventCount || 0)} events received. Last event: ${lastEventAt}. Red: ${Number(ragCounts.red || 0)}, amber: ${Number(ragCounts.amber || 0)}, green: ${Number(ragCounts.green || 0)}.`;
+    if (roadworksUploadMessage) {
+      setMessage(roadworksUploadMessage, 'Roadworks status loaded.', 'success');
+    }
   };
 
 
@@ -2976,43 +3116,38 @@ function initializeUsersPage() {
       }
   }
 
-  if (roadworksUploadForm && roadworksFileInput && roadworksUploadMessage && roadworksUploadSummary) {
-    roadworksUploadForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-
-      const file = roadworksFileInput.files && roadworksFileInput.files[0] ? roadworksFileInput.files[0] : null;
-      if (!file) {
-        setMessage(roadworksUploadMessage, 'Choose a roadworks CSV file before uploading.', 'error');
-        return;
-      }
-
-      const formData = new FormData();
-      formData.append('roadworksCsvFile', file);
-      setMessage(roadworksUploadMessage, 'Uploading roadworks CSV...');
-
-      const response = await fetch(window.OCC_ASSIST.roadworksUploadUrl, {
-        method: 'POST',
-        body: formData,
+  if (refreshRoadworksStatusButton && roadworksUploadMessage) {
+    refreshRoadworksStatusButton.addEventListener('click', () => {
+      setMessage(roadworksUploadMessage, 'Refreshing roadworks status...');
+      loadRoadworksStatus().catch((error) => {
+        setMessage(roadworksUploadMessage, error.message || 'Unable to load roadworks status.', 'error');
       });
-      const payload = await response.json();
-
-      if (!response.ok || !payload.ok) {
-        setMessage(roadworksUploadMessage, payload.message || 'Unable to upload roadworks CSV file.', 'error');
-        return;
-      }
-
-      setMessage(roadworksUploadMessage, `Upload complete. ${payload.roadworksCount} roadworks loaded, replacing any previous upload.`, 'success');
-      roadworksUploadForm.reset();
-      await loadRoadworksStatus();
     });
+  }
 
-    if (refreshRoadworksStatusButton) {
-      refreshRoadworksStatusButton.addEventListener('click', () => {
-        loadRoadworksStatus().catch((error) => {
-          setMessage(roadworksUploadMessage, error.message || 'Unable to refresh roadworks status.', 'error');
-        });
-      });
-    }
+  if (clearRoadworksButton && roadworksUploadMessage) {
+    clearRoadworksButton.addEventListener('click', async () => {
+      if (!window.OCC_ASSIST.roadworksClearUrl) {
+        setMessage(roadworksUploadMessage, 'Roadworks clear API is not configured.', 'error');
+        return;
+      }
+      const confirmed = window.confirm('Clear all currently stored roadworks? New events will repopulate them over time.');
+      if (!confirmed) return;
+
+      setMessage(roadworksUploadMessage, 'Clearing roadworks...');
+      try {
+        const response = await fetch(window.OCC_ASSIST.roadworksClearUrl, { method: 'POST' });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          setMessage(roadworksUploadMessage, payload.message || 'Unable to clear roadworks.', 'error');
+          return;
+        }
+        setMessage(roadworksUploadMessage, payload.message || 'Roadworks cleared.', 'success');
+        await loadRoadworksStatus();
+      } catch (error) {
+        setMessage(roadworksUploadMessage, error.message || 'Unable to clear roadworks.', 'error');
+      }
+    });
   }
 
   loadUsers();

@@ -32,7 +32,9 @@
         contactsEncryptionStatusUrl: {{ (admin_contacts_encryption_status_url | default('', true)) | tojson }},
         trackingRoadworksUrl: {{ (tracking_roadworks_url | default('', true)) | tojson }},
         roadworksStatusUrl: {{ (roadworks_status_url | default('', true)) | tojson }},
-        roadworksUploadUrl: {{ (roadworks_upload_url | default('', true)) | tojson }},
+        roadworksClearUrl: {{ (roadworks_clear_url | default('', true)) | tojson }},
+        roadworksByRouteUrl: {{ (roadworks_by_route_url | default('', true)) | tojson }},
+        roadworksPageUrl: {{ (roadworks_page_url | default('', true)) | tojson }},
         settingsRotacloudUrl: {{ url_for('get_rotacloud_setting') | tojson }},
         updateSettingsRotacloudUrl: {{ url_for('update_rotacloud_setting') | tojson }},
         overviewShiftsUrl: {{ url_for('daily_overview_shifts') | tojson }},
@@ -55,6 +57,7 @@
           <a href="{{ url_for('google_calendar_page') }}">Calendar</a>
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
+            <a href="{{ url_for('roadworks_page') }}">Roadworks</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.service_overview %}
             <a href="{{ url_for('service_overview') }}">Service Overview</a>

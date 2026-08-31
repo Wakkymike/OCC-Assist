@@ -26,6 +26,9 @@ from zoneinfo import ZoneInfo
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -48,6 +51,7 @@ PAGE_PERMISSIONS = {
     'contacts_page': 'contacts',
     'driving_hours': 'driving_hours',
     'admin_page': 'admin_privileges',
+    'roadworks_page': 'tracking',
 }
 SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
@@ -69,22 +73,19 @@ AUTO_DATA_CHECK_INTERVAL_SECONDS = int(os.environ.get('OCC_ASSIST_AUTO_DATA_CHEC
 GTFS_AUTO_DOWNLOAD_URL = str(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_URL', '')).strip()
 GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS = int(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS', '45'))
 ROADWORKS_DIR = INSTANCE_DIR / 'roadworks'
-ROADWORKS_CSV_PATH = ROADWORKS_DIR / 'latest-roadworks.csv'
-ROADWORKS_CACHE_PATH = ROADWORKS_DIR / 'roadworks-cache.json'
-ROADWORKS_MAX_UPLOAD_BYTES = int(os.environ.get('OCC_ASSIST_ROADWORKS_MAX_UPLOAD_BYTES', '5000000'))
-ROADWORKS_FIELD_ALIASES = {
-    'reference': ('reference', 'id', 'roadworks_id', 'ref', 'usrn'),
-    'title': ('title', 'description', 'location', 'name', 'street', 'location_description'),
-    'latitude': ('latitude', 'lat'),
-    'longitude': ('longitude', 'lon', 'lng', 'long'),
-    'easting': ('easting', 'east', 'os_easting', 'x', 'grid_easting'),
-    'northing': ('northing', 'north', 'os_northing', 'y', 'grid_northing'),
-    'severity': ('severity', 'rag', 'rag_rating', 'priority', 'severity_level'),
-    'status': ('status', 'state', 'works_status'),
-    'start_date': ('start_date', 'start', 'startdate', 'from', 'proposed_start_date'),
-    'end_date': ('end_date', 'end', 'enddate', 'to', 'proposed_end_date'),
-    'promoter': ('promoter', 'organisation', 'organization', 'company', 'promoter_organisation'),
-    'impact': ('impact', 'details', 'notes', 'comments', 'traffic_management'),
+ROADWORKS_EVENT_STORE_PATH = ROADWORKS_DIR / 'roadworks-events.json'
+ROADWORKS_ROUTE_MATCH_BUFFER_METERS = float(os.environ.get('OCC_ASSIST_ROADWORKS_ROUTE_BUFFER_METERS', '40'))
+# Street Manager Open Data publishes to these three fixed SNS topics; only accept messages claiming one of them.
+STREET_MANAGER_SNS_TOPIC_ARNS = {
+    'arn:aws:sns:eu-west-2:287813576808:prod-activity-topic': 'Activities',
+    'arn:aws:sns:eu-west-2:287813576808:prod-permit-topic': 'Permits',
+    'arn:aws:sns:eu-west-2:287813576808:prod-section-58-topic': 'Section 58s',
+}
+# Event types that mean a roadwork is no longer current and should be dropped from the map.
+STREET_MANAGER_REMOVAL_EVENT_TYPES = {
+    'permit_cancelled', 'permit_revoked', 'permit_refused',
+    'activity_cancelled',
+    'section_58_cancelled', 'section_58_closed',
 }
 BODS_TIMETABLE_NOC = str(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_NOC', 'GONW')).strip().upper()
 BODS_TIMETABLE_LIMIT = int(os.environ.get('OCC_ASSIST_BODS_TIMETABLE_LIMIT', '100'))
@@ -597,7 +598,9 @@ def inject_user_context() -> dict[str, object]:
         'admin_gtfs_manual_lock_url': url_for('admin_gtfs_manual_lock'),
         'tracking_roadworks_url': url_for('tracking_roadworks'),
         'roadworks_status_url': url_for('roadworks_status'),
-        'roadworks_upload_url': url_for('upload_roadworks'),
+        'roadworks_clear_url': url_for('clear_roadworks_store'),
+        'roadworks_by_route_url': url_for('roadworks_by_route'),
+        'roadworks_page_url': url_for('roadworks_page'),
     }
 
 
@@ -909,6 +912,12 @@ def tracking():
 @login_required('service_overview')
 def service_overview():
     return render_template('service-overview.html')
+
+
+@app.get('/roadworks')
+@login_required('tracking')
+def roadworks_page():
+    return render_template('roadworks.html')
 
 
 @app.get('/contacts')
@@ -2812,23 +2821,15 @@ def ensure_gtfs_cache_stops(cache: dict[str, object] | None) -> dict[str, object
     return updated_cache
 
 
-def _lookup_roadworks_field(row: dict[str, str], field: str) -> str:
-    for alias in ROADWORKS_FIELD_ALIASES.get(field, ()):
-        for key, value in row.items():
-            if str(key or '').strip().lower() == alias and str(value or '').strip():
-                return str(value).strip()
-    return ''
-
-
 def normalize_roadworks_rag(severity: str, status: str) -> str:
-    """Derive a red/amber/green rating from free-text severity or status values."""
+    """Derive a red/amber/green rating from free-text severity/work-category or status values."""
     severity_text = str(severity or '').strip().lower()
     status_text = str(status or '').strip().lower()
-    if any(token in severity_text for token in ('red', 'severe', 'high', 'major', 'critical')):
+    if any(token in severity_text for token in ('red', 'severe', 'high', 'major', 'immediate', 'critical', 'emergency')):
         return 'red'
-    if any(token in severity_text for token in ('amber', 'medium', 'moderate')):
+    if any(token in severity_text for token in ('amber', 'medium', 'moderate', 'standard')):
         return 'amber'
-    if any(token in severity_text for token in ('green', 'low', 'minor')):
+    if any(token in severity_text for token in ('green', 'low', 'minor', 'planned')):
         return 'green'
     if any(token in status_text for token in ('complete', 'closed', 'cancelled', 'canceled', 'finished')):
         return 'green'
@@ -2937,90 +2938,262 @@ def osgb36_grid_to_wgs84(easting: float, northing: float) -> tuple[float, float]
     return math.degrees(wgs84_lat), math.degrees(wgs84_lon)
 
 
-def parse_roadworks_csv(raw_bytes: bytes) -> list[dict[str, object]]:
-    try:
-        text = raw_bytes.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        text = raw_bytes.decode('latin-1')
+_EARTH_RADIUS_METERS = 6371000.0
 
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise ValueError('The CSV file has no header row.')
 
-    entries: list[dict[str, object]] = []
-    for index, row in enumerate(reader, start=1):
-        latitude_raw = _lookup_roadworks_field(row, 'latitude')
-        longitude_raw = _lookup_roadworks_field(row, 'longitude')
-        try:
-            latitude = float(latitude_raw)
-            longitude = float(longitude_raw)
-        except (TypeError, ValueError):
-            latitude = None
-            longitude = None
+def _lonlat_to_local_meters(lon: float, lat: float, reference_lat: float) -> tuple[float, float]:
+    """Flat-plane approximation of two nearby lon/lat points, accurate enough over a few hundred metres."""
+    x = math.radians(lon) * math.cos(math.radians(reference_lat)) * _EARTH_RADIUS_METERS
+    y = math.radians(lat) * _EARTH_RADIUS_METERS
+    return x, y
 
-        if latitude is None or longitude is None or not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-            easting_raw = _lookup_roadworks_field(row, 'easting')
-            northing_raw = _lookup_roadworks_field(row, 'northing')
-            try:
-                easting = float(easting_raw)
-                northing = float(northing_raw)
-            except (TypeError, ValueError):
-                continue
-            try:
-                latitude, longitude = osgb36_grid_to_wgs84(easting, northing)
-            except (ValueError, ZeroDivisionError):
-                continue
 
-        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+def _point_to_segment_distance_meters(point: tuple[float, float], seg_a: tuple[float, float], seg_b: tuple[float, float]) -> float:
+    px, py = point
+    ax, ay = seg_a
+    bx, by = seg_b
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+    closest_x, closest_y = ax + t * dx, ay + t * dy
+    return math.hypot(px - closest_x, py - closest_y)
+
+
+def get_route_geometries_for_matching() -> list[dict[str, object]]:
+    cache = load_gtfs_cache(allow_rebuild=False)
+    if not cache:
+        return []
+    features = cache.get('featureCollection', {}).get('features', [])
+    geometries: list[dict[str, object]] = []
+    for feature in features:
+        geometry = feature.get('geometry') or {}
+        properties = feature.get('properties') or {}
+        coordinates = geometry.get('coordinates') or []
+        if geometry.get('type') != 'LineString' or len(coordinates) < 2:
             continue
+        geometries.append({
+            'routeId': str(properties.get('routeId') or ''),
+            'label': str(properties.get('label') or properties.get('lineName') or ''),
+            'coordinates': coordinates,
+        })
+    return geometries
 
-        severity = _lookup_roadworks_field(row, 'severity')
-        status = _lookup_roadworks_field(row, 'status')
-        reference = _lookup_roadworks_field(row, 'reference') or f'ROW-{index}'
-        title = _lookup_roadworks_field(row, 'title') or 'Roadworks'
 
-        entries.append({
+def find_routes_affected_by_point(longitude: float, latitude: float, route_geometries: list[dict[str, object]], buffer_meters: float) -> list[dict[str, str]]:
+    matches: dict[str, str] = {}
+    point_meters = _lonlat_to_local_meters(longitude, latitude, latitude)
+    for geometry in route_geometries:
+        route_id = str(geometry.get('routeId') or '')
+        if not route_id or route_id in matches:
+            continue
+        coordinates = geometry.get('coordinates') or []
+        for index in range(len(coordinates) - 1):
+            seg_a_lon, seg_a_lat = coordinates[index]
+            seg_b_lon, seg_b_lat = coordinates[index + 1]
+            seg_a_meters = _lonlat_to_local_meters(seg_a_lon, seg_a_lat, latitude)
+            seg_b_meters = _lonlat_to_local_meters(seg_b_lon, seg_b_lat, latitude)
+            if _point_to_segment_distance_meters(point_meters, seg_a_meters, seg_b_meters) <= buffer_meters:
+                matches[route_id] = str(geometry.get('label') or route_id)
+                break
+    return [{'routeId': route_id, 'routeLabel': label} for route_id, label in matches.items()]
+
+
+def _parse_wkt_first_point(wkt: str) -> tuple[float, float] | None:
+    """Extracts the first easting/northing pair from a Street Manager POINT/LINESTRING WKT value."""
+    match = re.search(r'\(([^()]+)\)', str(wkt or ''))
+    if not match:
+        return None
+    first_pair = match.group(1).split(',')[0].strip()
+    parts = first_pair.split()
+    if len(parts) != 2:
+        return None
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+
+
+def _is_trusted_sns_url(url: str) -> bool:
+    parsed = urlparse(str(url or ''))
+    if parsed.scheme != 'https':
+        return False
+    host = parsed.hostname or ''
+    return bool(re.match(r'^sns\.[a-z0-9-]+\.amazonaws\.com$', host))
+
+
+_sns_cert_cache_lock = threading.Lock()
+_sns_cert_cache: dict[str, bytes] = {}
+
+
+def _get_sns_signing_certificate(cert_url: str) -> bytes | None:
+    if not _is_trusted_sns_url(cert_url):
+        return None
+    with _sns_cert_cache_lock:
+        cached = _sns_cert_cache.get(cert_url)
+    if cached:
+        return cached
+    try:
+        with urlopen(cert_url, timeout=15) as response:
+            cert_bytes = response.read()
+    except Exception:
+        return None
+    with _sns_cert_cache_lock:
+        _sns_cert_cache[cert_url] = cert_bytes
+    return cert_bytes
+
+
+def _sns_string_to_sign(payload: dict[str, object]) -> str:
+    message_type = str(payload.get('Type') or '')
+    if message_type == 'Notification':
+        keys = ['Message', 'MessageId', 'Subject', 'Timestamp', 'TopicArn', 'Type']
+    else:
+        keys = ['Message', 'MessageId', 'SubscribeURL', 'Timestamp', 'Token', 'TopicArn', 'Type']
+
+    parts: list[str] = []
+    for key in keys:
+        if key not in payload:
+            continue
+        parts.append(key)
+        parts.append(str(payload.get(key)))
+    return '\n'.join(parts) + '\n'
+
+
+def verify_sns_message_signature(payload: dict[str, object]) -> bool:
+    """Verifies an incoming AWS SNS message is authentically signed before we trust its contents."""
+    try:
+        cert_url = str(payload.get('SigningCertURL') or '')
+        signature_b64 = str(payload.get('Signature') or '')
+        if not cert_url or not signature_b64:
+            return False
+
+        cert_bytes = _get_sns_signing_certificate(cert_url)
+        if not cert_bytes:
+            return False
+
+        certificate = x509.load_pem_x509_certificate(cert_bytes)
+        public_key = certificate.public_key()
+        signature = base64.b64decode(signature_b64)
+        string_to_sign = _sns_string_to_sign(payload).encode('utf-8')
+
+        algorithm = hashes.SHA256() if str(payload.get('SignatureVersion') or '1') == '2' else hashes.SHA1()
+        public_key.verify(signature, string_to_sign, padding.PKCS1v15(), algorithm)
+        return True
+    except Exception:
+        return False
+
+
+_roadworks_event_store_lock = threading.Lock()
+
+
+def _load_roadworks_event_store() -> dict[str, object]:
+    if not ROADWORKS_EVENT_STORE_PATH.exists():
+        return {'entries': {}, 'subscriptions': {}, 'lastEventAt': '', 'eventCount': 0}
+    try:
+        store = json.loads(ROADWORKS_EVENT_STORE_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {'entries': {}, 'subscriptions': {}, 'lastEventAt': '', 'eventCount': 0}
+    store.setdefault('entries', {})
+    store.setdefault('subscriptions', {})
+    store.setdefault('lastEventAt', '')
+    store.setdefault('eventCount', 0)
+    return store
+
+
+def _save_roadworks_event_store(store: dict[str, object]) -> None:
+    ROADWORKS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = ROADWORKS_EVENT_STORE_PATH.with_suffix('.tmp')
+    tmp_path.write_text(json.dumps(store), encoding='utf-8')
+    tmp_path.replace(ROADWORKS_EVENT_STORE_PATH)
+
+
+def record_street_manager_subscription_confirmed(topic_arn: str) -> None:
+    with _roadworks_event_store_lock:
+        store = _load_roadworks_event_store()
+        store['subscriptions'][topic_arn] = datetime.now(timezone.utc).isoformat()
+        _save_roadworks_event_store(store)
+
+
+def _extract_roadworks_reference_and_coordinates(object_type: str, data: dict[str, object]) -> tuple[str, str]:
+    if object_type == 'PERMIT':
+        return str(data.get('permit_reference_number') or ''), str(data.get('works_location_coordinates') or '')
+    if object_type == 'ACTIVITY':
+        return str(data.get('activity_reference_number') or ''), str(data.get('activity_coordinates') or '')
+    if object_type == 'SECTION_58':
+        return str(data.get('section_58_reference_number') or ''), str(data.get('section_58_coordinates') or '')
+    return '', ''
+
+
+def process_street_manager_event(message: dict[str, object]) -> None:
+    """Applies one Street Manager notification to the live roadworks store (upsert or remove)."""
+    object_type = str(message.get('object_type') or '').strip().upper()
+    data = message.get('object_data')
+    if not isinstance(data, dict) or object_type not in {'PERMIT', 'ACTIVITY', 'SECTION_58'}:
+        return
+
+    reference, coordinates_wkt = _extract_roadworks_reference_and_coordinates(object_type, data)
+    if not reference:
+        return
+
+    event_type = re.sub(r'[\s-]+', '_', str(message.get('event_type') or '').strip().lower())
+
+    with _roadworks_event_store_lock:
+        store = _load_roadworks_event_store()
+        entries = store['entries']
+        store['eventCount'] = int(store.get('eventCount', 0)) + 1
+        store['lastEventAt'] = datetime.now(timezone.utc).isoformat()
+
+        if event_type in STREET_MANAGER_REMOVAL_EVENT_TYPES:
+            entries.pop(reference, None)
+            _save_roadworks_event_store(store)
+            return
+
+        point = _parse_wkt_first_point(coordinates_wkt)
+        if point is None:
+            existing = entries.get(reference)
+            if existing is None:
+                _save_roadworks_event_store(store)
+                return
+            latitude, longitude = existing['latitude'], existing['longitude']
+        else:
+            try:
+                latitude, longitude = osgb36_grid_to_wgs84(point[0], point[1])
+            except (ValueError, ZeroDivisionError):
+                _save_roadworks_event_store(store)
+                return
+
+        route_geometries = get_route_geometries_for_matching()
+        matches = find_routes_affected_by_point(longitude, latitude, route_geometries, ROADWORKS_ROUTE_MATCH_BUFFER_METERS)
+        if not matches:
+            entries.pop(reference, None)
+            _save_roadworks_event_store(store)
+            return
+
+        severity_source = str(data.get('work_category') or '')
+        status_source = str(data.get('work_status') or data.get('permit_status') or data.get('section_58_status') or '')
+        street = str(data.get('street_name') or data.get('location_description') or 'Roadworks')
+        town = str(data.get('town') or data.get('area_name') or '')
+
+        entries[reference] = {
             'id': reference,
             'reference': reference,
-            'title': title,
+            'worksReference': str(data.get('work_reference_number') or ''),
+            'objectType': object_type,
+            'title': f'{street}, {town}' if town and town.lower() not in street.lower() else street,
             'latitude': latitude,
             'longitude': longitude,
-            'severity': severity or 'Unknown',
-            'status': status or 'Unknown',
-            'rag': normalize_roadworks_rag(severity, status),
-            'startDate': _lookup_roadworks_field(row, 'start_date'),
-            'endDate': _lookup_roadworks_field(row, 'end_date'),
-            'promoter': _lookup_roadworks_field(row, 'promoter'),
-            'impact': _lookup_roadworks_field(row, 'impact'),
-        })
-
-    if not entries:
-        raise ValueError('No valid roadworks rows were found. Ensure the CSV includes latitude and longitude columns.')
-
-    return entries
-
-
-def save_roadworks_data(csv_bytes: bytes, entries: list[dict[str, object]], original_filename: str) -> dict[str, object]:
-    ROADWORKS_DIR.mkdir(parents=True, exist_ok=True)
-    # Overwriting both files means the previous upload's roadworks never persist.
-    ROADWORKS_CSV_PATH.write_bytes(csv_bytes)
-    payload = {
-        'uploadedAt': datetime.now(timezone.utc).isoformat(),
-        'originalFilename': original_filename,
-        'roadworksCount': len(entries),
-        'roadworks': entries,
-    }
-    ROADWORKS_CACHE_PATH.write_text(json.dumps(payload), encoding='utf-8')
-    return payload
-
-
-def load_roadworks_cache() -> dict[str, object]:
-    if not ROADWORKS_CACHE_PATH.exists():
-        return {'roadworks': [], 'roadworksCount': 0, 'uploadedAt': '', 'originalFilename': ''}
-    try:
-        return json.loads(ROADWORKS_CACHE_PATH.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return {'roadworks': [], 'roadworksCount': 0, 'uploadedAt': '', 'originalFilename': ''}
+            'severity': severity_source or 'Unknown',
+            'status': status_source or 'Unknown',
+            'rag': normalize_roadworks_rag(severity_source, status_source),
+            'startDate': str(data.get('actual_start_date_time') or data.get('proposed_start_date') or data.get('start_date') or ''),
+            'endDate': str(data.get('actual_end_date_time') or data.get('proposed_end_date') or data.get('end_date') or ''),
+            'promoter': str(data.get('promoter_organisation') or data.get('highway_authority') or ''),
+            'impact': str(data.get('traffic_management_type') or ''),
+            'routeIds': [item['routeId'] for item in matches],
+            'routeLabels': [item['routeLabel'] for item in matches],
+            'updatedAt': datetime.now(timezone.utc).isoformat(),
+        }
+        _save_roadworks_event_store(store)
 
 
 def unzip_gtfs_archive(zip_bytes: bytes) -> Path:
@@ -4247,73 +4420,134 @@ def upload_gtfs():
     )
 
 
-@app.post('/api/roadworks/upload')
-@login_required('admin_privileges')
-def upload_roadworks():
-    file = request.files.get('roadworksCsvFile')
-    if file is None or not file.filename:
-        return jsonify({'ok': False, 'message': 'Select a roadworks CSV file to upload.'}), 400
+@app.post('/api/roadworks/street-manager-webhook')
+def street_manager_webhook():
+    """Public endpoint for AWS SNS; every message's signature is verified before it's trusted."""
+    payload = request.get_json(force=True, silent=True)
+    if not isinstance(payload, dict):
+        return '', 400
 
-    raw = file.stream.read(ROADWORKS_MAX_UPLOAD_BYTES + 1)
-    if len(raw) > ROADWORKS_MAX_UPLOAD_BYTES:
-        return jsonify({'ok': False, 'message': 'The file is too large.'}), 413
+    topic_arn = str(payload.get('TopicArn') or '')
+    if topic_arn not in STREET_MANAGER_SNS_TOPIC_ARNS:
+        return '', 400
 
-    try:
-        entries = parse_roadworks_csv(raw)
-    except ValueError as error:
-        return jsonify({'ok': False, 'message': str(error)}), 400
+    if not verify_sns_message_signature(payload):
+        return '', 400
 
-    cache_payload = save_roadworks_data(raw, entries, file.filename)
-    rag_counts = {'red': 0, 'amber': 0, 'green': 0}
-    for entry in entries:
-        rag = str(entry.get('rag') or 'amber')
-        rag_counts[rag] = rag_counts.get(rag, 0) + 1
+    message_type = str(payload.get('Type') or '')
 
-    return jsonify(
-        {
-            'ok': True,
-            'roadworksCount': int(cache_payload.get('roadworksCount', 0)),
-            'uploadedAt': cache_payload.get('uploadedAt', ''),
-            'originalFilename': cache_payload.get('originalFilename', ''),
-            'ragCounts': rag_counts,
-        }
-    )
+    if message_type == 'SubscriptionConfirmation':
+        subscribe_url = str(payload.get('SubscribeURL') or '')
+        if subscribe_url and _is_trusted_sns_url(subscribe_url):
+            try:
+                with urlopen(subscribe_url, timeout=15):
+                    pass
+                record_street_manager_subscription_confirmed(topic_arn)
+            except Exception:
+                pass
+        return '', 200
+
+    if message_type == 'Notification':
+        try:
+            message_body = json.loads(str(payload.get('Message') or '{}'))
+        except (TypeError, ValueError):
+            return '', 400
+        if isinstance(message_body, dict):
+            process_street_manager_event(message_body)
+        return '', 200
+
+    return '', 200
 
 
 @app.get('/api/roadworks/status')
 @login_required('admin_privileges')
 def roadworks_status():
-    cache = load_roadworks_cache()
-    entries = cache.get('roadworks') or []
+    store = _load_roadworks_event_store()
+    entries = list(store.get('entries', {}).values())
     rag_counts = {'red': 0, 'amber': 0, 'green': 0}
     for entry in entries:
         rag = str(entry.get('rag') or 'amber')
         rag_counts[rag] = rag_counts.get(rag, 0) + 1
 
+    subscriptions = [
+        {
+            'topicArn': topic_arn,
+            'label': label,
+            'confirmedAt': store.get('subscriptions', {}).get(topic_arn, ''),
+        }
+        for topic_arn, label in STREET_MANAGER_SNS_TOPIC_ARNS.items()
+    ]
+
     return jsonify(
         {
             'ok': True,
-            'configured': bool(entries),
+            'configured': True,
+            'webhookUrl': url_for('street_manager_webhook', _external=True),
             'roadworksCount': len(entries),
-            'uploadedAt': cache.get('uploadedAt', ''),
-            'originalFilename': cache.get('originalFilename', ''),
+            'eventCount': int(store.get('eventCount') or 0),
+            'lastEventAt': store.get('lastEventAt', ''),
             'ragCounts': rag_counts,
+            'subscriptions': subscriptions,
         }
     )
+
+
+@app.post('/api/roadworks/clear')
+@login_required('admin_privileges')
+def clear_roadworks_store():
+    with _roadworks_event_store_lock:
+        store = _load_roadworks_event_store()
+        store['entries'] = {}
+        _save_roadworks_event_store(store)
+    return jsonify({'ok': True, 'message': 'All roadworks entries cleared.'})
 
 
 @app.get('/api/tracking/roadworks')
 @login_required('tracking')
 def tracking_roadworks():
-    cache = load_roadworks_cache()
-    entries = cache.get('roadworks') or []
+    store = _load_roadworks_event_store()
+    entries = list(store.get('entries', {}).values())
     return jsonify(
         {
             'ok': True,
-            'configured': bool(entries),
+            'configured': True,
             'roadworks': entries,
             'roadworksCount': len(entries),
-            'uploadedAt': cache.get('uploadedAt', ''),
+            'fetchedAt': store.get('lastEventAt', ''),
+        }
+    )
+
+
+@app.get('/api/roadworks/by-route')
+@login_required('tracking')
+def roadworks_by_route():
+    store = _load_roadworks_event_store()
+    entries = list(store.get('entries', {}).values())
+
+    gtfs_cache = load_gtfs_cache(allow_rebuild=False)
+    routes = (gtfs_cache or {}).get('routes') or []
+
+    grouped: dict[str, dict[str, object]] = {}
+    for route in routes:
+        route_id = str(route.get('id') or '')
+        if route_id:
+            grouped[route_id] = {'routeId': route_id, 'routeLabel': str(route.get('label') or route.get('lineName') or route_id), 'roadworks': []}
+
+    for entry in entries:
+        for route_id, route_label in zip(entry.get('routeIds') or [], entry.get('routeLabels') or []):
+            group = grouped.setdefault(route_id, {'routeId': route_id, 'routeLabel': route_label, 'roadworks': []})
+            group['roadworks'].append(entry)
+
+    groups = [group for group in grouped.values() if group['roadworks']]
+    groups.sort(key=lambda group: route_sort_key(str(group['routeLabel'] or group['routeId'])))
+
+    return jsonify(
+        {
+            'ok': True,
+            'configured': True,
+            'routeGroups': groups,
+            'roadworksCount': len(entries),
+            'fetchedAt': store.get('lastEventAt', ''),
         }
     )
 
