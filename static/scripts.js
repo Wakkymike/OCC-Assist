@@ -381,11 +381,75 @@ function initializeMap() {
       trackingFollowToggle.textContent = followSelectedVehicle ? 'Following vehicle' : 'Follow vehicle';
     };
 
+    const centerStopOnMap = (coordinates, immediate = false) => {
+      if (!mapAvailable || !map || !Array.isArray(coordinates) || coordinates.length !== 2) return;
+      const [lng, lat] = coordinates;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+      const zoom = Math.max(15, Number(map.getZoom?.() || 15));
+      map.easeTo({
+        center: [lng, lat],
+        zoom,
+        duration: immediate ? 0 : 650,
+      });
+    };
+
+    const executeStopSearch = (query) => {
+      if (!stopFeaturesLoaded || !stopFeatureCollection.features.length) {
+        setMessage(mapStatus, 'Bus stop data is not available yet.', 'error');
+        return;
+      }
+
+      const getStopSearchValues = (feature) => {
+        const properties = feature.properties || {};
+        return [
+          String(properties.name || '').trim().toLowerCase(),
+          String(properties.naptan || '').trim().toLowerCase(),
+          String(properties.stopCode || '').trim().toLowerCase(),
+          String(properties.id || '').trim().toLowerCase(),
+        ];
+      };
+
+      const features = stopFeatureCollection.features;
+      const exactMatch = features.find((feature) => getStopSearchValues(feature).includes(query));
+      let match = exactMatch || null;
+      if (!match) {
+        const partialMatches = features.filter((feature) => getStopSearchValues(feature).some((value) => value && value.includes(query)));
+        if (partialMatches.length === 1) {
+          match = partialMatches[0];
+        } else if (partialMatches.length > 1) {
+          setMessage(mapStatus, 'Multiple bus stops match that search. Refine your search.', 'error');
+          return;
+        }
+      }
+
+      if (!match) {
+        setMessage(mapStatus, 'No matching bus stop found.', 'error');
+        return;
+      }
+
+      // Deselect any tracked vehicle so the stop panel takes over the sidebar.
+      selectedVehicleId = null;
+      selectedVehicleFleet = null;
+      followSelectedVehicle = false;
+      syncFollowButton();
+      syncSelectedMarkerStyles();
+
+      lastStopClickAt = Date.now();
+      selectStop(match.properties || {});
+      centerStopOnMap(match.geometry?.coordinates);
+      setMessage(mapStatus, `Showing stop ${match.properties?.name || match.properties?.id || 'details'}.`, 'success');
+    };
+
     const executeVehicleSearch = () => {
       const query = String(trackingSearchQuery?.value || '').trim().toLowerCase();
       const searchType = String(trackingSearchType?.value || 'fleetNumber');
       if (!query) {
-        setMessage(mapStatus, 'Enter a fleet or running board number to search.', 'error');
+        setMessage(mapStatus, 'Enter a fleet number, running board or bus stop to search.', 'error');
+        return;
+      }
+
+      if (searchType === 'busStop') {
+        executeStopSearch(query);
         return;
       }
 
