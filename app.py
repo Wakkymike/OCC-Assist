@@ -77,6 +77,8 @@ ROADWORKS_FIELD_ALIASES = {
     'title': ('title', 'description', 'location', 'name', 'street', 'location_description'),
     'latitude': ('latitude', 'lat'),
     'longitude': ('longitude', 'lon', 'lng', 'long'),
+    'easting': ('easting', 'east', 'os_easting', 'x', 'grid_easting'),
+    'northing': ('northing', 'north', 'os_northing', 'y', 'grid_northing'),
     'severity': ('severity', 'rag', 'rag_rating', 'priority', 'severity_level'),
     'status': ('status', 'state', 'works_status'),
     'start_date': ('start_date', 'start', 'startdate', 'from', 'proposed_start_date'),
@@ -2833,6 +2835,108 @@ def normalize_roadworks_rag(severity: str, status: str) -> str:
     return 'amber'
 
 
+# OSGB36 (Airy 1830) ellipsoid and National Grid true-origin constants used to invert
+# the transverse Mercator projection for British National Grid easting/northing values.
+_OSGB36_SEMI_MAJOR_AXIS = 6377563.396
+_OSGB36_SEMI_MINOR_AXIS = 6356256.909
+_OSGB36_SCALE_FACTOR = 0.9996012717
+_OSGB36_TRUE_ORIGIN_LAT = math.radians(49)
+_OSGB36_TRUE_ORIGIN_LON = math.radians(-2)
+_OSGB36_TRUE_ORIGIN_NORTHING = -100000.0
+_OSGB36_TRUE_ORIGIN_EASTING = 400000.0
+_WGS84_SEMI_MAJOR_AXIS = 6378137.000
+_WGS84_SEMI_MINOR_AXIS = 6356752.3141
+# Published Helmert transform parameters for OSGB36 -> WGS84 (Ordnance Survey guide, Annex A).
+_OSGB36_TO_WGS84_TRANSLATION = (446.448, -125.157, 542.060)
+_OSGB36_TO_WGS84_ROTATION_SECONDS = (0.1502, 0.2470, 0.8421)
+_OSGB36_TO_WGS84_SCALE_PPM = -20.4894
+
+
+def _ellipsoidal_to_cartesian(lat: float, lon: float, height: float, semi_major: float, semi_minor: float) -> tuple[float, float, float]:
+    eccentricity_sq = 1 - (semi_minor ** 2) / (semi_major ** 2)
+    nu = semi_major / math.sqrt(1 - eccentricity_sq * math.sin(lat) ** 2)
+    x = (nu + height) * math.cos(lat) * math.cos(lon)
+    y = (nu + height) * math.cos(lat) * math.sin(lon)
+    z = ((1 - eccentricity_sq) * nu + height) * math.sin(lat)
+    return x, y, z
+
+
+def _cartesian_to_ellipsoidal(x: float, y: float, z: float, semi_major: float, semi_minor: float) -> tuple[float, float]:
+    eccentricity_sq = 1 - (semi_minor ** 2) / (semi_major ** 2)
+    p = math.sqrt(x ** 2 + y ** 2)
+    lat = math.atan2(z, p * (1 - eccentricity_sq))
+    for _ in range(10):
+        nu = semi_major / math.sqrt(1 - eccentricity_sq * math.sin(lat) ** 2)
+        next_lat = math.atan2(z + eccentricity_sq * nu * math.sin(lat), p)
+        if abs(next_lat - lat) < 1e-12:
+            lat = next_lat
+            break
+        lat = next_lat
+    lon = math.atan2(y, x)
+    return lat, lon
+
+
+def osgb36_grid_to_wgs84(easting: float, northing: float) -> tuple[float, float]:
+    """Convert a British National Grid (OSGB36) easting/northing pair to WGS84 lat/lon degrees."""
+    a = _OSGB36_SEMI_MAJOR_AXIS
+    b = _OSGB36_SEMI_MINOR_AXIS
+    f0 = _OSGB36_SCALE_FACTOR
+    lat0 = _OSGB36_TRUE_ORIGIN_LAT
+    lon0 = _OSGB36_TRUE_ORIGIN_LON
+    n0 = _OSGB36_TRUE_ORIGIN_NORTHING
+    e0 = _OSGB36_TRUE_ORIGIN_EASTING
+    e2 = 1 - (b ** 2) / (a ** 2)
+    n = (a - b) / (a + b)
+
+    lat = lat0
+    m = 0.0
+    for _ in range(50):
+        lat = ((northing - n0 - m) / (a * f0)) + lat
+        term_a = (1 + n + (5 / 4) * n ** 2 + (5 / 4) * n ** 3) * (lat - lat0)
+        term_b = (3 * n + 3 * n ** 2 + (21 / 8) * n ** 3) * math.sin(lat - lat0) * math.cos(lat + lat0)
+        term_c = ((15 / 8) * n ** 2 + (15 / 8) * n ** 3) * math.sin(2 * (lat - lat0)) * math.cos(2 * (lat + lat0))
+        term_d = (35 / 24) * n ** 3 * math.sin(3 * (lat - lat0)) * math.cos(3 * (lat + lat0))
+        m = b * f0 * (term_a - term_b + term_c - term_d)
+        if abs(northing - n0 - m) < 0.00001:
+            break
+
+    sin_lat = math.sin(lat)
+    nu = a * f0 / math.sqrt(1 - e2 * sin_lat ** 2)
+    rho = a * f0 * (1 - e2) / (1 - e2 * sin_lat ** 2) ** 1.5
+    eta2 = nu / rho - 1
+
+    tan_lat = math.tan(lat)
+    sec_lat = 1 / math.cos(lat)
+    tan_lat2 = tan_lat ** 2
+    tan_lat4 = tan_lat ** 4
+    tan_lat6 = tan_lat ** 6
+
+    term_vii = tan_lat / (2 * rho * nu)
+    term_viii = tan_lat / (24 * rho * nu ** 3) * (5 + 3 * tan_lat2 + eta2 - 9 * tan_lat2 * eta2)
+    term_ix = tan_lat / (720 * rho * nu ** 5) * (61 + 90 * tan_lat2 + 45 * tan_lat4)
+    term_x = sec_lat / nu
+    term_xi = sec_lat / (6 * nu ** 3) * (nu / rho + 2 * tan_lat2)
+    term_xii = sec_lat / (120 * nu ** 5) * (5 + 28 * tan_lat2 + 24 * tan_lat4)
+    term_xiia = sec_lat / (5040 * nu ** 7) * (61 + 662 * tan_lat2 + 1320 * tan_lat4 + 720 * tan_lat6)
+
+    de = easting - e0
+    osgb36_lat = lat - term_vii * de ** 2 + term_viii * de ** 4 - term_ix * de ** 6
+    osgb36_lon = lon0 + term_x * de - term_xi * de ** 3 + term_xii * de ** 5 - term_xiia * de ** 7
+
+    x, y, z = _ellipsoidal_to_cartesian(osgb36_lat, osgb36_lon, 0.0, a, b)
+
+    tx, ty, tz = _OSGB36_TO_WGS84_TRANSLATION
+    rx, ry, rz = (math.radians(value / 3600) for value in _OSGB36_TO_WGS84_ROTATION_SECONDS)
+    scale = _OSGB36_TO_WGS84_SCALE_PPM / 1_000_000
+
+    x2 = tx + (1 + scale) * x - rz * y + ry * z
+    y2 = ty + rz * x + (1 + scale) * y - rx * z
+    z2 = tz - ry * x + rx * y + (1 + scale) * z
+
+    wgs84_lat, wgs84_lon = _cartesian_to_ellipsoidal(x2, y2, z2, _WGS84_SEMI_MAJOR_AXIS, _WGS84_SEMI_MINOR_AXIS)
+    return math.degrees(wgs84_lat), math.degrees(wgs84_lon)
+
+
 def parse_roadworks_csv(raw_bytes: bytes) -> list[dict[str, object]]:
     try:
         text = raw_bytes.decode('utf-8-sig')
@@ -2851,7 +2955,22 @@ def parse_roadworks_csv(raw_bytes: bytes) -> list[dict[str, object]]:
             latitude = float(latitude_raw)
             longitude = float(longitude_raw)
         except (TypeError, ValueError):
-            continue
+            latitude = None
+            longitude = None
+
+        if latitude is None or longitude is None or not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            easting_raw = _lookup_roadworks_field(row, 'easting')
+            northing_raw = _lookup_roadworks_field(row, 'northing')
+            try:
+                easting = float(easting_raw)
+                northing = float(northing_raw)
+            except (TypeError, ValueError):
+                continue
+            try:
+                latitude, longitude = osgb36_grid_to_wgs84(easting, northing)
+            except (ValueError, ZeroDivisionError):
+                continue
+
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             continue
 
