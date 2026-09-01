@@ -893,21 +893,7 @@ def daily_overview_upcoming_shifts():
         filtered_events = [event for event in filtered_events if not is_rest_day_or_holiday_event(event)]
 
     serialized_shifts = [serialize_shift_event(event) for event in filtered_events]
-    week_days: list[dict[str, object]] = []
-    if scope == 'week':
-        for day_index in range(7):
-            day_start_local = period_start_local + timedelta(days=day_index)
-            day_events = [
-                event for event in filtered_events
-                if event['start'].astimezone(LONDON_TZ).date() == day_start_local.date()
-            ]
-            week_days.append(
-                {
-                    'dateIso': day_start_local.date().isoformat(),
-                    'dayLabel': day_start_local.strftime('%A %d %b'),
-                    'shifts': [serialize_shift_event(event) for event in day_events],
-                }
-            )
+    period_days = serialize_period_shift_days(filtered_events, period_start_local, period_end_local)
 
     return jsonify(
         {
@@ -917,7 +903,8 @@ def daily_overview_upcoming_shifts():
             'offset': offset,
             'periodLabel': period_label,
             'shifts': serialized_shifts,
-            'weekDays': week_days,
+            'periodDays': period_days,
+            'weekDays': period_days,
             'weekStartsOn': 'Sunday',
         }
     )
@@ -1271,6 +1258,28 @@ def get_period_bounds(scope: str, offset: int) -> tuple[datetime, datetime, str]
     period_end = period_start + timedelta(days=7)
     label = f"{period_start.strftime('%d %b %Y')} - {(period_end - timedelta(days=1)).strftime('%d %b %Y')}"
     return period_start, period_end, label
+
+
+def serialize_period_shift_days(events: list[dict[str, object]], period_start_local: datetime, period_end_local: datetime) -> list[dict[str, object]]:
+    days: list[dict[str, object]] = []
+    day_start_local = period_start_local
+    while day_start_local < period_end_local:
+        day_end_local = day_start_local + timedelta(days=1)
+        day_start_utc = day_start_local.astimezone(timezone.utc)
+        day_end_utc = day_end_local.astimezone(timezone.utc)
+        day_events = [
+            event for event in events
+            if event['start'] < day_end_utc and event['end'] > day_start_utc
+        ]
+        days.append(
+            {
+                'dateIso': day_start_local.date().isoformat(),
+                'dayLabel': day_start_local.strftime('%A %d %b'),
+                'shifts': [serialize_shift_event(event) for event in day_events],
+            }
+        )
+        day_start_local = day_end_local
+    return days
 
 
 def serialize_shift_event(event: dict[str, object]) -> dict[str, object]:

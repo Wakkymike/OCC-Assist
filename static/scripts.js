@@ -2132,10 +2132,14 @@ function initializeDailyOverview() {
 
   const renderUpcomingShifts = (payload) => {
     const items = Array.isArray(payload && payload.shifts) ? payload.shifts : [];
-    const weekDays = Array.isArray(payload && payload.weekDays) ? payload.weekDays : [];
+    const periodDays = Array.isArray(payload && payload.periodDays)
+      ? payload.periodDays
+      : Array.isArray(payload && payload.weekDays)
+        ? payload.weekDays
+        : [];
 
-    if (payload && payload.scope === 'week' && weekDays.length) {
-      upcomingList.innerHTML = weekDays
+    if (periodDays.length) {
+      upcomingList.innerHTML = periodDays
         .map((day) => {
           const dayShifts = Array.isArray(day && day.shifts) ? day.shifts : [];
           const shiftsMarkup = dayShifts.length
