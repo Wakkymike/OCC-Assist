@@ -14,6 +14,17 @@ def test_sharepoint_webhook_validation_token_returns_plain_text_200():
     assert response.content_type == 'text/plain; charset=utf-8'
 
 
+def test_live_adjustments_page_validtoken_bypasses_login_for_sharepoint_handshake():
+    app_module.app.config['TESTING'] = True
+    client = app_module.app.test_client()
+
+    response = client.post('/occ-live-adjustments?validtoken=page-token-123')
+
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == 'page-token-123'
+    assert response.content_type == 'text/plain; charset=utf-8'
+
+
 def test_sharepoint_webhook_accepts_and_stores_notification_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_DIR', tmp_path)
     monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH', tmp_path / 'sharepoint-webhook-events.json')

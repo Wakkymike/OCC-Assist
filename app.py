@@ -625,6 +625,14 @@ def has_permission(user: dict[str, object] | None, permission_key: str) -> bool:
     return bool(permissions.get('admin_privileges')) or bool(permissions.get(permission_key))
 
 
+def get_sharepoint_validation_token() -> str | None:
+    for key in ('validationToken', 'validationtoken', 'validtoken'):
+        value = request.args.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def login_required(permission_key: str | None = None):
     def decorator(view_func):
         @wraps(view_func)
@@ -790,9 +798,18 @@ def daily_overview():
     return render_template('daily-overview.html')
 
 
-@app.get('/occ-live-adjustments')
-@login_required('live_adjustments')
+@app.route('/occ-live-adjustments', methods=['GET', 'POST'])
 def occ_live_adjustments_page():
+    validation_token = get_sharepoint_validation_token()
+    if validation_token is not None:
+        return validation_token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+    user = get_current_user()
+    if user is None:
+        return redirect(url_for('index'))
+    if not has_permission(user, 'live_adjustments'):
+        abort(403)
+
     return render_template(
         'occ-live-adjustments.html',
         webhook_url=url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
@@ -4640,9 +4657,7 @@ def occ_live_adjustments_status():
 
 @app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['GET', 'POST'])
 def occ_live_adjustments_sharepoint_webhook():
-    validation_token = request.args.get('validationToken')
-    if validation_token is None:
-        validation_token = request.args.get('validationtoken')
+    validation_token = get_sharepoint_validation_token()
     if validation_token is not None:
         return validation_token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
