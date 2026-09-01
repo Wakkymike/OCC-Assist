@@ -23,7 +23,7 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography import x509
@@ -4638,21 +4638,26 @@ def occ_live_adjustments_status():
     )
 
 
-@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['GET', 'POST'])
+@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
 def occ_live_adjustments_sharepoint_webhook():
-    validation_token = request.args.get('validationToken')
-    if validation_token is None:
-        validation_token = request.args.get('validationtoken')
-    if validation_token is not None:
-        return validation_token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    validation_token = request.args.get('validationtoken')
+    if validation_token:
+        print(f'[Handshake Match] Intercepted URL Token: {validation_token}')
+        return Response(str(validation_token), status=200, mimetype='text/plain')
 
-    payload: object = request.get_json(silent=True)
-    if payload is None:
-        raw_payload = request.get_data(as_text=True)
-        payload = {'raw': raw_payload} if raw_payload else {}
+    try:
+        raw_bytes = request.data
+        if raw_bytes:
+            decoded_text = raw_bytes.decode('utf-8')
+            print(f'[Payload Match] Raw Request Data: {decoded_text}')
 
-    record_live_adjustments_webhook_event(payload)
-    return jsonify({'ok': True}), 200
+            if 'validationtoken=' in decoded_text:
+                token_extract = decoded_text.split('validationtoken=')[-1]
+                return Response(str(token_extract), status=200, mimetype='text/plain')
+    except Exception as error:
+        print(f'[19:25 Exception Error]: {error}')
+
+    return Response(status=200)
 
 
 @app.post('/api/gtfs/upload')
