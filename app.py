@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 import zipfile
+import requests
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
@@ -24,6 +25,7 @@ import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
+from flask_apscheduler import APScheduler
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography import x509
@@ -121,6 +123,49 @@ app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
 app.config['BODS_STALE_SECONDS'] = int(os.environ.get('OCC_ASSIST_BODS_STALE_SECONDS', '120'))
 app.config['SESSION_INACTIVITY_SECONDS'] = int(os.environ.get('OCC_ASSIST_SESSION_INACTIVITY_SECONDS', '3600'))
+
+scheduler = APScheduler()
+SHAREPOINT_COOKIES = {
+    'FedAuth': os.environ.get('OCC_ASSIST_SHAREPOINT_FEDAUTH', ''),
+    'rtFa': os.environ.get('OCC_ASSIST_SHAREPOINT_RTFA', ''),
+}
+LIST_API_URL = os.environ.get('OCC_ASSIST_SHAREPOINT_LIST_API_URL', '').strip()
+latest_adjustments_data: list[dict[str, object]] = []
+
+
+def fetch_sharepoint_changes() -> None:
+    global latest_adjustments_data
+    if not LIST_API_URL:
+        return
+
+    cookies = {key: value for key, value in SHAREPOINT_COOKIES.items() if value}
+    headers = {
+        'Accept': 'application/json;odata=nometadata',
+        'Content-Type': 'application/json',
+    }
+
+    try:
+        response = requests.get(LIST_API_URL, headers=headers, cookies=cookies, timeout=10)
+        if response.status_code == 200:
+            raw_payload = response.json()
+            items = raw_payload.get('value', []) if isinstance(raw_payload, dict) else []
+            latest_adjustments_data = items if isinstance(items, list) else []
+            print(f'[SharePoint Sync] Success! Synced {len(latest_adjustments_data)} live adjustments.')
+        elif response.status_code in (401, 403):
+            print('[SharePoint Sync WARNING] Authentication failed. Your FedAuth/rtFa cookies have expired!')
+        else:
+            print(f'[SharePoint Sync Error] Server returned HTTP code: {response.status_code}')
+    except Exception as error:
+        print(f'[SharePoint Sync Exception] Connection failed: {error}')
+
+
+@scheduler.task('interval', id='sync_sharepoint_job', seconds=60, misfire_grace_time=900)
+def scheduled_sync() -> None:
+    fetch_sharepoint_changes()
+
+
+scheduler.init_app(app)
+scheduler.start()
 
 
 SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
@@ -854,6 +899,7 @@ def occ_live_adjustments_page():
         'occ-live-adjustments.html',
         webhook_url=url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
         webhook_status=get_live_adjustments_webhook_status(),
+        adjustments=latest_adjustments_data,
     )
 
 

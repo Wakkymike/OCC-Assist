@@ -3,6 +3,13 @@ import json
 import app as app_module
 
 
+class FakeSharePointResponse:
+    status_code = 200
+
+    def json(self):
+        return {'value': [{'Title': 'Adjustment 1'}, {'Title': 'Adjustment 2'}]}
+
+
 def test_sharepoint_webhook_validation_token_returns_plain_text_200():
     app_module.app.config['TESTING'] = True
     client = app_module.app.test_client()
@@ -68,3 +75,28 @@ def test_live_adjustments_page_post_accepts_notification_without_login(tmp_path,
 def test_occ_live_adjustments_page_has_standalone_permission():
     assert app_module.PERMISSIONS['live_adjustments'] == 'OCC Live Adjustments'
     assert app_module.PAGE_PERMISSIONS['occ_live_adjustments_page'] == 'live_adjustments'
+
+
+def test_fetch_sharepoint_changes_updates_latest_adjustments_cache(monkeypatch):
+    calls = []
+
+    def fake_get(url, headers, cookies, timeout):
+        calls.append({'url': url, 'headers': headers, 'cookies': cookies, 'timeout': timeout})
+        return FakeSharePointResponse()
+
+    monkeypatch.setattr(app_module, 'LIST_API_URL', 'https://sharepoint.example/_api/web/lists/items')
+    monkeypatch.setattr(app_module, 'SHAREPOINT_COOKIES', {'FedAuth': 'fed', 'rtFa': 'rt'})
+    monkeypatch.setattr(app_module.requests, 'get', fake_get)
+    monkeypatch.setattr(app_module, 'latest_adjustments_data', [])
+
+    app_module.fetch_sharepoint_changes()
+
+    assert calls == [
+        {
+            'url': 'https://sharepoint.example/_api/web/lists/items',
+            'headers': {'Accept': 'application/json;odata=nometadata', 'Content-Type': 'application/json'},
+            'cookies': {'FedAuth': 'fed', 'rtFa': 'rt'},
+            'timeout': 10,
+        }
+    ]
+    assert app_module.latest_adjustments_data == [{'Title': 'Adjustment 1'}, {'Title': 'Adjustment 2'}]

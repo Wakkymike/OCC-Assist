@@ -29,6 +29,28 @@
 
     <section class="admin-card">
       <div class="section-row">
+        <h2>SharePoint Live Adjustments</h2>
+        <span class="service-count-pill">{{ adjustments|length }} synced</span>
+      </div>
+      <div class="service-overview-list">
+        {% for adjustment in adjustments %}
+          <article class="service-card">
+            <div class="service-card-head">
+              <div>
+                <p class="service-card-route">{{ adjustment.Title or adjustment.title or adjustment.id or adjustment.ID or 'Live adjustment' }}</p>
+                <strong>{{ adjustment.Status or adjustment.status or adjustment.Category or adjustment.category or 'Pending' }}</strong>
+              </div>
+              <span class="sidebar-pill">SharePoint</span>
+            </div>
+          </article>
+        {% else %}
+          <p class="saved-empty">No SharePoint live adjustments synced yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="admin-card">
+      <div class="section-row">
         <h2>Pending Webhook Information</h2>
         <span class="service-count-pill">{{ webhook_status.storedEventCount }} stored</span>
       </div>
