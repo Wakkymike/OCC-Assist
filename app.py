@@ -4726,24 +4726,23 @@ def occ_live_adjustments_status():
 @app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
 def occ_live_adjustments_sharepoint_webhook():
     validation_token = request.args.get('validationtoken')
-
-    if not validation_token and request.data:
-        try:
-            raw_body = request.data.decode('utf-8')
-            if 'validationtoken=' in raw_body:
-                validation_token = raw_body.split('validationtoken=')[1]
-            else:
-                validation_token = raw_body
-        except Exception:
-            pass
-
     if validation_token:
-        print(f'[SUCCESS] Handshake Intercepted! Echoing Token: {validation_token}')
+        print(f'-> [RAW ACK] Intercepted URL Token: {validation_token}')
         response = Response(str(validation_token), status=200, mimetype='text/plain')
         response.headers['Content-Type'] = 'text/plain'
         return response
 
-    print('[Webhook Event] Received change event notification packet.')
+    try:
+        raw_body_data = request.data.decode('utf-8')
+        print(f'-> [RAW ACK] Incoming Body Payload: {raw_body_data}')
+
+        if 'validationtoken=' in raw_body_data:
+            token_extract = raw_body_data.split('validationtoken=')[-1]
+            response = Response(str(token_extract), status=200, mimetype='text/plain')
+            response.headers['Content-Type'] = 'text/plain'
+            return response
+    except Exception as error:
+        print(f'-> [RAW ACK Parsing Exception]: {error}')
 
     return Response(status=200)
 

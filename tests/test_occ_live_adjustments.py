@@ -36,7 +36,7 @@ def test_sharepoint_webhook_body_query_text_validation_token_returns_plain_text_
     assert response.content_type == 'text/plain'
 
 
-def test_sharepoint_webhook_raw_body_validation_token_returns_plain_text_200():
+def test_sharepoint_webhook_raw_body_without_validationtoken_returns_empty_200():
     app_module.app.config['TESTING'] = True
     client = app_module.app.test_client()
 
@@ -47,8 +47,7 @@ def test_sharepoint_webhook_raw_body_validation_token_returns_plain_text_200():
     )
 
     assert response.status_code == 200
-    assert response.get_data(as_text=True) == 'raw-body-token-123'
-    assert response.content_type == 'text/plain'
+    assert response.get_data(as_text=True) == ''
 
 
 def test_live_adjustments_page_validtoken_bypasses_login_for_sharepoint_handshake():
