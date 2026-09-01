@@ -866,7 +866,7 @@ function initializeMap() {
           source: roadworksSourceId,
           layout: {
             'icon-image': ['match', ['get', 'rag'], 'red', 'roadworks-sign-red', 'amber', 'roadworks-sign-amber', 'green', 'roadworks-sign-green', 'roadworks-sign-neutral'],
-            'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.16, 12, 0.24, 15, 0.34],
+            'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.14, 10, 0.2, 12, 0.3, 14, 0.42, 16, 0.56, 18, 0.7],
             'icon-anchor': 'bottom',
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
