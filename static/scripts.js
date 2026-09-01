@@ -139,6 +139,22 @@ function formatJourneyOriginDeparture(vehicle) {
   return parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatRoadworksDateTime(value) {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) {
+    return '';
+  }
+
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return rawValue;
+  }
+
+  const date = parsed.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const time = parsed.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${date} ${time}`;
+}
+
 function formatLastStop(lastStop) {
   if (!lastStop) {
     return 'Not yet available';
@@ -815,7 +831,7 @@ function initializeMap() {
     const showRoadworksPopup = (feature) => {
       const properties = feature.properties || {};
       const ragClass = { red: 'red', amber: 'yellow', green: 'green' }[properties.rag] || 'neutral';
-      const dateRange = [properties.startDate, properties.endDate].filter(Boolean).join(' to ');
+      const dateRange = [properties.startDate, properties.endDate].map(formatRoadworksDateTime).filter(Boolean).join(' to ');
       const html = `
         <div class="roadworks-popup">
           <p class="roadworks-popup-title">${escapeHtml(String(properties.title || 'Roadworks'))}</p>
@@ -1353,7 +1369,7 @@ function initializeRoadworksPage() {
 
     listEl.innerHTML = groups.map((group) => {
       const roadworksMarkup = group.roadworks.map((item) => {
-        const dateRange = [item.startDate, item.endDate].filter(Boolean).join(' to ');
+        const dateRange = [item.startDate, item.endDate].map(formatRoadworksDateTime).filter(Boolean).join(' to ');
         return `
           <article class="service-card">
             <div class="service-card-head">
