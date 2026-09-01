@@ -641,6 +641,12 @@ def sharepoint_validation_response(validation_token: str):
 
 def receive_live_adjustments_sharepoint_notification():
     payload: object = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        for key in ('validationToken', 'validationtoken', 'validtoken'):
+            validation_token = payload.get(key)
+            if validation_token:
+                return sharepoint_validation_response(str(validation_token))
+
     if payload is None:
         raw_payload = request.get_data(as_text=True)
         payload = {'raw': raw_payload} if raw_payload else {}
