@@ -793,22 +793,83 @@ function initializeMap() {
       stopInteractionsBound = true;
     };
 
-    const ragColorExpression = ['match', ['get', 'rag'], 'red', '#ff4d4d', 'amber', '#ffb020', 'green', '#2ecc71', '#ffb020'];
+    const createRoadworksSignImage = (fillColor) => {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext('2d');
+      context.clearRect(0, 0, size, size);
+      context.lineJoin = 'round';
+      context.lineCap = 'round';
+
+      context.beginPath();
+      context.moveTo(32, 5);
+      context.lineTo(59, 56);
+      context.lineTo(5, 56);
+      context.closePath();
+      context.fillStyle = fillColor;
+      context.fill();
+      context.lineWidth = 5;
+      context.strokeStyle = '#111417';
+      context.stroke();
+
+      context.beginPath();
+      context.moveTo(32, 17);
+      context.lineTo(49, 50);
+      context.lineTo(15, 50);
+      context.closePath();
+      context.fillStyle = '#ffffff';
+      context.fill();
+
+      context.strokeStyle = '#111417';
+      context.fillStyle = '#111417';
+      context.lineWidth = 3;
+      context.beginPath();
+      context.arc(32, 27, 4, 0, Math.PI * 2);
+      context.fill();
+      context.beginPath();
+      context.moveTo(32, 32);
+      context.lineTo(27, 43);
+      context.moveTo(32, 32);
+      context.lineTo(39, 43);
+      context.moveTo(28, 35);
+      context.lineTo(38, 35);
+      context.moveTo(43, 31);
+      context.lineTo(23, 49);
+      context.stroke();
+
+      return context.getImageData(0, 0, size, size);
+    };
+
+    const ensureRoadworksSignImages = () => {
+      [
+        ['roadworks-sign-red', '#ff4d4d'],
+        ['roadworks-sign-amber', '#ffb020'],
+        ['roadworks-sign-green', '#2ecc71'],
+        ['roadworks-sign-neutral', '#ffb020'],
+      ].forEach(([imageId, fillColor]) => {
+        if (!map.hasImage(imageId)) {
+          map.addImage(imageId, createRoadworksSignImage(fillColor), { pixelRatio: 2 });
+        }
+      });
+    };
 
     const ensureRoadworksOverlayLayers = () => {
       if (!map.getSource(roadworksSourceId)) {
         map.addSource(roadworksSourceId, { type: 'geojson', data: emptyRoadworksFeatureCollection });
         map.addLayer({ id: roadworksHitLayerId, type: 'circle', source: roadworksSourceId, paint: { 'circle-radius': 16, 'circle-color': '#ffffff', 'circle-opacity': 0.01 } });
+        ensureRoadworksSignImages();
         map.addLayer({
           id: roadworksLayerId,
-          type: 'circle',
+          type: 'symbol',
           source: roadworksSourceId,
-          paint: {
-            'circle-color': ragColorExpression,
-            'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3.6, 12, 5.4, 15, 7.4],
-            'circle-stroke-color': '#111417',
-            'circle-stroke-width': 1.5,
-            'circle-opacity': 0.9,
+          layout: {
+            'icon-image': ['match', ['get', 'rag'], 'red', 'roadworks-sign-red', 'amber', 'roadworks-sign-amber', 'green', 'roadworks-sign-green', 'roadworks-sign-neutral'],
+            'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.16, 12, 0.24, 15, 0.34],
+            'icon-anchor': 'bottom',
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
           },
         });
       }
