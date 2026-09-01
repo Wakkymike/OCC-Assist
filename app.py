@@ -4695,13 +4695,19 @@ def occ_live_adjustments_status():
     )
 
 
-@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['GET', 'POST'])
+@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
 def occ_live_adjustments_sharepoint_webhook():
-    validation_token = get_sharepoint_validation_token()
-    if validation_token is not None:
-        return sharepoint_validation_response(validation_token)
+    validation_token = request.args.get('validationtoken')
+    if validation_token:
+        response = Response(str(validation_token), status=200, mimetype='text/plain')
+        response.headers['Content-Type'] = 'text/plain'
+        return response
 
-    return receive_live_adjustments_sharepoint_notification()
+    data = request.get_json(silent=True)
+    if data and 'value' in data:
+        record_live_adjustments_webhook_event(data)
+
+    return Response(status=200)
 
 
 @app.post('/api/gtfs/upload')
