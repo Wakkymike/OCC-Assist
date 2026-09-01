@@ -42,6 +42,24 @@ def test_sharepoint_webhook_body_validationtoken_returns_plain_text_200(tmp_path
     assert not (tmp_path / 'sharepoint-webhook-events.json').exists()
 
 
+def test_sharepoint_webhook_raw_body_validationtoken_returns_plain_text_200(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_DIR', tmp_path)
+    monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH', tmp_path / 'sharepoint-webhook-events.json')
+    app_module.app.config['TESTING'] = True
+    client = app_module.app.test_client()
+
+    response = client.post(
+        '/api/occ-live-adjustments/sharepoint-webhook',
+        data='{"validationtoken":"raw-body-token-123"}',
+        content_type='text/plain',
+    )
+
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == 'raw-body-token-123'
+    assert response.content_type == 'text/plain'
+    assert not (tmp_path / 'sharepoint-webhook-events.json').exists()
+
+
 def test_sharepoint_webhook_accepts_and_stores_notification_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_DIR', tmp_path)
     monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH', tmp_path / 'sharepoint-webhook-events.json')

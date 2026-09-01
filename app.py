@@ -633,6 +633,23 @@ def get_sharepoint_validation_token() -> str | None:
     return None
 
 
+def get_sharepoint_validation_token_from_payload(payload: object, raw_payload: str = '') -> str | None:
+    if isinstance(payload, dict):
+        for key in ('validationToken', 'validationtoken', 'validtoken'):
+            value = payload.get(key)
+            if value:
+                return str(value)
+
+    match = re.search(r'"(?:validationToken|validationtoken|validtoken)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', raw_payload)
+    if match:
+        try:
+            return json.loads(f'"{match.group(1)}"')
+        except json.JSONDecodeError:
+            return match.group(1)
+
+    return None
+
+
 def sharepoint_validation_response(validation_token: str):
     response = Response(validation_token, status=200, mimetype='text/plain')
     response.headers['Content-Type'] = 'text/plain'
@@ -640,15 +657,13 @@ def sharepoint_validation_response(validation_token: str):
 
 
 def receive_live_adjustments_sharepoint_notification():
+    raw_payload = request.get_data(as_text=True)
     payload: object = request.get_json(silent=True)
-    if isinstance(payload, dict):
-        for key in ('validationToken', 'validationtoken', 'validtoken'):
-            validation_token = payload.get(key)
-            if validation_token:
-                return sharepoint_validation_response(str(validation_token))
+    validation_token = get_sharepoint_validation_token_from_payload(payload, raw_payload)
+    if validation_token is not None:
+        return sharepoint_validation_response(validation_token)
 
     if payload is None:
-        raw_payload = request.get_data(as_text=True)
         payload = {'raw': raw_payload} if raw_payload else {}
 
     record_live_adjustments_webhook_event(payload)
