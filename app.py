@@ -17,15 +17,13 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 import zipfile
-import requests
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
-from flask_apscheduler import APScheduler
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography import x509
@@ -123,49 +121,6 @@ app.config['BODS_FEED_ID'] = os.environ.get('OCC_ASSIST_BODS_FEED_ID', '18880')
 app.config['BODS_API_KEY'] = os.environ.get('OCC_ASSIST_BODS_API_KEY', '')
 app.config['BODS_STALE_SECONDS'] = int(os.environ.get('OCC_ASSIST_BODS_STALE_SECONDS', '120'))
 app.config['SESSION_INACTIVITY_SECONDS'] = int(os.environ.get('OCC_ASSIST_SESSION_INACTIVITY_SECONDS', '3600'))
-
-scheduler = APScheduler()
-SHAREPOINT_COOKIES = {
-    'FedAuth': os.environ.get('OCC_ASSIST_SHAREPOINT_FEDAUTH', ''),
-    'rtFa': os.environ.get('OCC_ASSIST_SHAREPOINT_RTFA', ''),
-}
-LIST_API_URL = os.environ.get('OCC_ASSIST_SHAREPOINT_LIST_API_URL', '').strip()
-latest_adjustments_data: list[dict[str, object]] = []
-
-
-def fetch_sharepoint_changes() -> None:
-    global latest_adjustments_data
-    if not LIST_API_URL:
-        return
-
-    cookies = {key: value for key, value in SHAREPOINT_COOKIES.items() if value}
-    headers = {
-        'Accept': 'application/json;odata=nometadata',
-        'Content-Type': 'application/json',
-    }
-
-    try:
-        response = requests.get(LIST_API_URL, headers=headers, cookies=cookies, timeout=10)
-        if response.status_code == 200:
-            raw_payload = response.json()
-            items = raw_payload.get('value', []) if isinstance(raw_payload, dict) else []
-            latest_adjustments_data = items if isinstance(items, list) else []
-            print(f'[SharePoint Sync] Success! Synced {len(latest_adjustments_data)} live adjustments.')
-        elif response.status_code in (401, 403):
-            print('[SharePoint Sync WARNING] Authentication failed. Your FedAuth/rtFa cookies have expired!')
-        else:
-            print(f'[SharePoint Sync Error] Server returned HTTP code: {response.status_code}')
-    except Exception as error:
-        print(f'[SharePoint Sync Exception] Connection failed: {error}')
-
-
-@scheduler.task('interval', id='sync_sharepoint_job', seconds=60, misfire_grace_time=900)
-def scheduled_sync() -> None:
-    fetch_sharepoint_changes()
-
-
-scheduler.init_app(app)
-scheduler.start()
 
 
 SIRI_NAMESPACE = {'siri': 'http://www.siri.org.uk/siri'}
@@ -670,51 +625,6 @@ def has_permission(user: dict[str, object] | None, permission_key: str) -> bool:
     return bool(permissions.get('admin_privileges')) or bool(permissions.get(permission_key))
 
 
-def get_sharepoint_validation_token() -> str | None:
-    for key in ('validationToken', 'validationtoken', 'validtoken'):
-        value = request.args.get(key)
-        if value is not None:
-            return value
-    return None
-
-
-def get_sharepoint_validation_token_from_payload(payload: object, raw_payload: str = '') -> str | None:
-    if isinstance(payload, dict):
-        for key in ('validationToken', 'validationtoken', 'validtoken'):
-            value = payload.get(key)
-            if value:
-                return str(value)
-
-    match = re.search(r'"(?:validationToken|validationtoken|validtoken)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', raw_payload)
-    if match:
-        try:
-            return json.loads(f'"{match.group(1)}"')
-        except json.JSONDecodeError:
-            return match.group(1)
-
-    return None
-
-
-def sharepoint_validation_response(validation_token: str):
-    response = Response(validation_token, status=200, mimetype='text/plain')
-    response.headers['Content-Type'] = 'text/plain'
-    return response
-
-
-def receive_live_adjustments_sharepoint_notification():
-    raw_payload = request.get_data(as_text=True)
-    payload: object = request.get_json(silent=True)
-    validation_token = get_sharepoint_validation_token_from_payload(payload, raw_payload)
-    if validation_token is not None:
-        return sharepoint_validation_response(validation_token)
-
-    if payload is None:
-        payload = {'raw': raw_payload} if raw_payload else {}
-
-    record_live_adjustments_webhook_event(payload)
-    return Response(status=200)
-
-
 def login_required(permission_key: str | None = None):
     def decorator(view_func):
         @wraps(view_func)
@@ -880,26 +790,13 @@ def daily_overview():
     return render_template('daily-overview.html')
 
 
-@app.route('/occ-live-adjustments', methods=['GET', 'POST'])
+@app.get('/occ-live-adjustments')
+@login_required('live_adjustments')
 def occ_live_adjustments_page():
-    validation_token = get_sharepoint_validation_token()
-    if validation_token is not None:
-        return sharepoint_validation_response(validation_token)
-
-    if request.method == 'POST':
-        return receive_live_adjustments_sharepoint_notification()
-
-    user = get_current_user()
-    if user is None:
-        return redirect(url_for('index'))
-    if not has_permission(user, 'live_adjustments'):
-        abort(403)
-
     return render_template(
-        'occ_live_adjustments.html',
+        'occ-live-adjustments.html',
         webhook_url=url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
         webhook_status=get_live_adjustments_webhook_status(),
-        adjustments=latest_adjustments_data,
     )
 
 
@@ -4711,42 +4608,6 @@ def admin_data_status():
     return jsonify({'ok': True, 'status': get_data_health_status(force=force)})
 
 
-@app.get('/api/occ-live-adjustments/status')
-@login_required('live_adjustments')
-def occ_live_adjustments_status():
-    return jsonify(
-        {
-            'ok': True,
-            'webhookUrl': url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
-            'status': get_live_adjustments_webhook_status(),
-        }
-    )
-
-
-@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
-def occ_live_adjustments_sharepoint_webhook():
-    validation_token = request.args.get('validationtoken')
-    if validation_token:
-        print(f'-> [RAW ACK] Intercepted URL Token: {validation_token}')
-        response = Response(str(validation_token), status=200, mimetype='text/plain')
-        response.headers['Content-Type'] = 'text/plain'
-        return response
-
-    try:
-        raw_body_data = request.data.decode('utf-8')
-        print(f'-> [RAW ACK] Incoming Body Payload: {raw_body_data}')
-
-        if 'validationtoken=' in raw_body_data:
-            token_extract = raw_body_data.split('validationtoken=')[-1]
-            response = Response(str(token_extract), status=200, mimetype='text/plain')
-            response.headers['Content-Type'] = 'text/plain'
-            return response
-    except Exception as error:
-        print(f'-> [RAW ACK Parsing Exception]: {error}')
-
-    return Response(status=200)
-
-
 
 
 @app.route('/api/admin/gtfs-manual-lock', methods=['GET', 'POST'])
@@ -4763,6 +4624,35 @@ def admin_gtfs_manual_lock():
         'enabled': saved,
         'message': 'Manual GTFS lock enabled.' if saved else 'Manual GTFS lock disabled.',
     })
+
+
+@app.get('/api/occ-live-adjustments/status')
+@login_required('live_adjustments')
+def occ_live_adjustments_status():
+    return jsonify(
+        {
+            'ok': True,
+            'webhookUrl': url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
+            'status': get_live_adjustments_webhook_status(),
+        }
+    )
+
+
+@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['GET', 'POST'])
+def occ_live_adjustments_sharepoint_webhook():
+    validation_token = request.args.get('validationToken')
+    if validation_token is None:
+        validation_token = request.args.get('validationtoken')
+    if validation_token is not None:
+        return validation_token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+    payload: object = request.get_json(silent=True)
+    if payload is None:
+        raw_payload = request.get_data(as_text=True)
+        payload = {'raw': raw_payload} if raw_payload else {}
+
+    record_live_adjustments_webhook_event(payload)
+    return jsonify({'ok': True}), 200
 
 
 @app.post('/api/gtfs/upload')
