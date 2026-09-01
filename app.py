@@ -76,6 +76,7 @@ ROADWORKS_DIR = INSTANCE_DIR / 'roadworks'
 ROADWORKS_EVENT_STORE_PATH = ROADWORKS_DIR / 'roadworks-events.json'
 ROADWORKS_ROUTE_MATCH_BUFFER_METERS = float(os.environ.get('OCC_ASSIST_ROADWORKS_ROUTE_BUFFER_METERS', '40'))
 ROADWORKS_UPCOMING_LOOKAHEAD_DAYS = int(os.environ.get('OCC_ASSIST_ROADWORKS_UPCOMING_LOOKAHEAD_DAYS', '14'))
+ROADWORKS_EXPIRED_RETENTION_HOURS = int(os.environ.get('OCC_ASSIST_ROADWORKS_EXPIRED_RETENTION_HOURS', '48'))
 # Street Manager Open Data publishes to these three fixed SNS topics; only accept messages claiming one of them.
 STREET_MANAGER_SNS_TOPIC_ARNS = {
     'arn:aws:sns:eu-west-2:287813576808:prod-activity-topic': 'Activities',
@@ -3119,14 +3120,40 @@ def serialize_visible_roadworks_entry(entry: dict[str, object], now: datetime | 
     if start_time is not None and current_time < start_time - timedelta(days=ROADWORKS_UPCOMING_LOOKAHEAD_DAYS):
         return None
 
+    end_time = parse_session_timestamp(entry.get('endDate'))
+    if end_time is not None and current_time > end_time + timedelta(hours=ROADWORKS_EXPIRED_RETENTION_HOURS):
+        return None
+
     serialized = dict(entry)
     serialized['sourceStatus'] = str(entry.get('status') or '')
     is_upcoming = start_time is not None and current_time < start_time
+    is_expired = end_time is not None and current_time > end_time
+    is_extended = bool(entry.get('isExtended'))
     serialized['isUpcoming'] = is_upcoming
-    serialized['lifecycleStatus'] = 'upcoming' if is_upcoming else 'active'
+    serialized['isExpired'] = is_expired
+    serialized['isExtended'] = is_extended
+    if is_upcoming:
+        serialized['lifecycleStatus'] = 'upcoming'
+    elif is_expired:
+        serialized['lifecycleStatus'] = 'expired'
+    else:
+        serialized['lifecycleStatus'] = 'active'
+
     if is_upcoming:
         serialized['status'] = 'Upcoming'
+    elif is_expired:
+        serialized['status'] = 'Expired'
+    elif is_extended:
+        serialized['status'] = 'Active (Extended)'
     return serialized
+
+
+def roadworks_lifecycle_sort_key(entry: dict[str, object]) -> tuple[int, datetime, str]:
+    lifecycle_order = {'active': 0, 'expired': 1, 'upcoming': 2}
+    lifecycle = str(entry.get('lifecycleStatus') or 'active')
+    start_time = parse_session_timestamp(entry.get('startDate')) or datetime.max.replace(tzinfo=timezone.utc)
+    title = str(entry.get('title') or entry.get('reference') or '')
+    return lifecycle_order.get(lifecycle, 0), start_time, title.lower()
 
 
 def get_visible_roadworks_entries(store: dict[str, object], now: datetime | None = None) -> list[dict[str, object]]:
@@ -3206,6 +3233,18 @@ def process_street_manager_event(message: dict[str, object]) -> None:
         status_source = str(data.get('work_status') or data.get('permit_status') or data.get('section_58_status') or '')
         street = str(data.get('street_name') or data.get('location_description') or 'Roadworks')
         town = str(data.get('town') or data.get('area_name') or '')
+        existing_entry = entries.get(reference)
+        if not isinstance(existing_entry, dict):
+            existing_entry = {}
+        start_date = str(data.get('actual_start_date_time') or data.get('proposed_start_date') or data.get('start_date') or '')
+        end_date = str(data.get('actual_end_date_time') or data.get('proposed_end_date') or data.get('end_date') or '')
+        previous_end_time = parse_session_timestamp(existing_entry.get('endDate'))
+        current_end_time = parse_session_timestamp(end_date)
+        is_extended = bool(existing_entry.get('isExtended')) or (
+            previous_end_time is not None
+            and current_end_time is not None
+            and current_end_time > previous_end_time
+        )
 
         entries[reference] = {
             'id': reference,
@@ -3218,8 +3257,9 @@ def process_street_manager_event(message: dict[str, object]) -> None:
             'severity': severity_source or 'Unknown',
             'status': status_source or 'Unknown',
             'rag': normalize_roadworks_rag(severity_source, status_source),
-            'startDate': str(data.get('actual_start_date_time') or data.get('proposed_start_date') or data.get('start_date') or ''),
-            'endDate': str(data.get('actual_end_date_time') or data.get('proposed_end_date') or data.get('end_date') or ''),
+            'startDate': start_date,
+            'endDate': end_date,
+            'isExtended': is_extended,
             'promoter': str(data.get('promoter_organisation') or data.get('highway_authority') or ''),
             'impact': str(data.get('traffic_management_type') or ''),
             'routeIds': [item['routeId'] for item in matches],
@@ -4572,6 +4612,8 @@ def roadworks_by_route():
             group['roadworks'].append(entry)
 
     groups = [group for group in grouped.values() if group['roadworks']]
+    for group in groups:
+        group['roadworks'].sort(key=roadworks_lifecycle_sort_key)
     groups.sort(key=lambda group: route_sort_key(str(group['routeLabel'] or group['routeId'])))
 
     return jsonify(

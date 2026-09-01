@@ -832,7 +832,13 @@ function initializeMap() {
       const properties = feature.properties || {};
       const ragClass = { red: 'red', amber: 'yellow', green: 'green' }[properties.rag] || 'neutral';
       const dateRange = [properties.startDate, properties.endDate].map(formatRoadworksDateTime).filter(Boolean).join(' to ');
-      const badgeLabel = properties.isUpcoming ? 'Upcoming' : String(properties.severity || 'Unknown');
+      const badgeLabel = properties.isExpired
+        ? 'Expired'
+        : properties.isUpcoming
+          ? 'Upcoming'
+          : properties.isExtended
+            ? 'Extended'
+            : String(properties.severity || 'Unknown');
       const html = `
         <div class="roadworks-popup">
           <p class="roadworks-popup-title">${escapeHtml(String(properties.title || 'Roadworks'))}</p>
@@ -948,6 +954,9 @@ function initializeMap() {
               severity: item.severity,
               status: item.status,
               isUpcoming: Boolean(item.isUpcoming),
+              isExpired: Boolean(item.isExpired),
+              isExtended: Boolean(item.isExtended),
+              lifecycleStatus: item.lifecycleStatus,
               rag: item.rag,
               startDate: item.startDate,
               endDate: item.endDate,
@@ -1372,7 +1381,13 @@ function initializeRoadworksPage() {
     listEl.innerHTML = groups.map((group) => {
       const roadworksMarkup = group.roadworks.map((item) => {
         const dateRange = [item.startDate, item.endDate].map(formatRoadworksDateTime).filter(Boolean).join(' to ');
-        const badgeLabel = item.isUpcoming ? 'Upcoming' : String(item.severity || 'Unknown');
+        const badgeLabel = item.isExpired
+          ? 'Expired'
+          : item.isUpcoming
+            ? 'Upcoming'
+            : item.isExtended
+              ? 'Extended'
+              : String(item.severity || 'Unknown');
         return `
           <article class="service-card">
             <div class="service-card-head">
