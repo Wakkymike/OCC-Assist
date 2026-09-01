@@ -23,7 +23,7 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography import x509
@@ -634,7 +634,19 @@ def get_sharepoint_validation_token() -> str | None:
 
 
 def sharepoint_validation_response(validation_token: str):
-    return validation_token, 200, {'Content-Type': 'text/plain'}
+    response = Response(validation_token, status=200, mimetype='text/plain')
+    response.headers['Content-Type'] = 'text/plain'
+    return response
+
+
+def receive_live_adjustments_sharepoint_notification():
+    payload: object = request.get_json(silent=True)
+    if payload is None:
+        raw_payload = request.get_data(as_text=True)
+        payload = {'raw': raw_payload} if raw_payload else {}
+
+    record_live_adjustments_webhook_event(payload)
+    return Response(status=200)
 
 
 def login_required(permission_key: str | None = None):
@@ -807,6 +819,9 @@ def occ_live_adjustments_page():
     validation_token = get_sharepoint_validation_token()
     if validation_token is not None:
         return sharepoint_validation_response(validation_token)
+
+    if request.method == 'POST':
+        return receive_live_adjustments_sharepoint_notification()
 
     user = get_current_user()
     if user is None:
@@ -4665,13 +4680,7 @@ def occ_live_adjustments_sharepoint_webhook():
     if validation_token is not None:
         return sharepoint_validation_response(validation_token)
 
-    payload: object = request.get_json(silent=True)
-    if payload is None:
-        raw_payload = request.get_data(as_text=True)
-        payload = {'raw': raw_payload} if raw_payload else {}
-
-    record_live_adjustments_webhook_event(payload)
-    return jsonify({'ok': True}), 200
+    return receive_live_adjustments_sharepoint_notification()
 
 
 @app.post('/api/gtfs/upload')
