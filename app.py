@@ -4726,32 +4726,24 @@ def occ_live_adjustments_status():
 @app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
 def occ_live_adjustments_sharepoint_webhook():
     validation_token = request.args.get('validationtoken')
+
+    if not validation_token and request.data:
+        try:
+            raw_body = request.data.decode('utf-8')
+            if 'validationtoken=' in raw_body:
+                validation_token = raw_body.split('validationtoken=')[1]
+            else:
+                validation_token = raw_body
+        except Exception:
+            pass
+
     if validation_token:
-        print(f'[Webhook Handshake] Echoing token: {validation_token}')
+        print(f'[SUCCESS] Handshake Intercepted! Echoing Token: {validation_token}')
         response = Response(str(validation_token), status=200, mimetype='text/plain')
         response.headers['Content-Type'] = 'text/plain'
         return response
 
-    try:
-        data = request.get_json(silent=True) or {}
-        notifications = data.get('value') if isinstance(data, dict) else None
-
-        if isinstance(notifications, list) and notifications:
-            print(f'[Webhook Active] Intercepted {len(notifications)} SharePoint event alerts:')
-
-            for note in notifications:
-                if not isinstance(note, dict):
-                    continue
-                subscription_id = note.get('subscriptionId')
-                list_id = note.get('resource')
-                site_url = note.get('siteUrl')
-
-                print(f' -> List Changed: {list_id} on site {site_url}')
-                print(f' -> Subscription ID Tracking: {subscription_id}')
-        else:
-            print('[Webhook Warning] Received payload, but notification array was empty.')
-    except Exception as error:
-        print(f'[Webhook Failure] Could not evaluate data framework: {error}')
+    print('[Webhook Event] Received change event notification packet.')
 
     return Response(status=200)
 
