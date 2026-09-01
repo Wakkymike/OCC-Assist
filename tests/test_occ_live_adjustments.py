@@ -5,7 +5,7 @@ def test_sharepoint_webhook_validation_token_returns_plain_text_200():
     app_module.app.config['TESTING'] = True
     client = app_module.app.test_client()
 
-    response = client.post('/api/occ-live-adjustments/sharepoint-fresh-test?validationtoken=abc123')
+    response = client.post('/api/occ-live-adjustments?validationtoken=abc123')
 
     assert response.status_code == 200
     assert response.get_data(as_text=True) == 'abc123'
@@ -17,7 +17,7 @@ def test_sharepoint_webhook_body_validationtoken_returns_plain_text_200():
     client = app_module.app.test_client()
 
     response = client.post(
-        '/api/occ-live-adjustments/sharepoint-fresh-test',
+        '/api/occ-live-adjustments',
         data='validationtoken=body-token-123',
         content_type='text/plain',
     )
@@ -33,7 +33,7 @@ def test_sharepoint_webhook_accepts_notification_payload_without_storing(tmp_pat
     client = app_module.app.test_client()
 
     response = client.post(
-        '/api/occ-live-adjustments/sharepoint-fresh-test',
+        '/api/occ-live-adjustments',
         json={'value': [{'subscriptionId': 'sub-1', 'resource': 'lists/list-id/items/1'}]},
     )
 

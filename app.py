@@ -795,7 +795,7 @@ def daily_overview():
 def occ_live_adjustments_page():
     return render_template(
         'occ-live-adjustments.html',
-        webhook_url=url_for('sharepoint_fresh_test', _external=True),
+        webhook_url=url_for('occ_live_adjustments_webhook', _external=True),
         webhook_status=get_live_adjustments_webhook_status(),
     )
 
@@ -4632,14 +4632,14 @@ def occ_live_adjustments_status():
     return jsonify(
         {
             'ok': True,
-            'webhookUrl': url_for('sharepoint_fresh_test', _external=True),
+            'webhookUrl': url_for('occ_live_adjustments_webhook', _external=True),
             'status': get_live_adjustments_webhook_status(),
         }
     )
 
 
-@app.route('/api/occ-live-adjustments/sharepoint-fresh-test', methods=['POST'])
-def sharepoint_fresh_test():
+@app.route('/api/occ-live-adjustments', methods=['POST'])
+def occ_live_adjustments_webhook():
     validation_token = request.args.get('validationtoken')
     if validation_token:
         print(f'-> [FRESH HANDSHAKE SUCCESS] Received URL Token: {validation_token}')
