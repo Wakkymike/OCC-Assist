@@ -795,7 +795,7 @@ def daily_overview():
 def occ_live_adjustments_page():
     return render_template(
         'occ-live-adjustments.html',
-        webhook_url=url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
+        webhook_url=url_for('sharepoint_fresh_test', _external=True),
         webhook_status=get_live_adjustments_webhook_status(),
     )
 
@@ -4632,30 +4632,29 @@ def occ_live_adjustments_status():
     return jsonify(
         {
             'ok': True,
-            'webhookUrl': url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
+            'webhookUrl': url_for('sharepoint_fresh_test', _external=True),
             'status': get_live_adjustments_webhook_status(),
         }
     )
 
 
-@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
-def occ_live_adjustments_sharepoint_webhook():
+@app.route('/api/occ-live-adjustments/sharepoint-fresh-test', methods=['POST'])
+def sharepoint_fresh_test():
     validation_token = request.args.get('validationtoken')
     if validation_token:
-        print(f'[Handshake Match] Intercepted URL Token: {validation_token}')
+        print(f'-> [FRESH HANDSHAKE SUCCESS] Received URL Token: {validation_token}')
         return Response(str(validation_token), status=200, mimetype='text/plain')
 
     try:
-        raw_bytes = request.data
-        if raw_bytes:
-            decoded_text = raw_bytes.decode('utf-8')
-            print(f'[Payload Match] Raw Request Data: {decoded_text}')
+        raw_body = request.data.decode('utf-8')
+        if raw_body:
+            print(f'-> [FRESH PAYLOAD SUCCESS] Received Body: {raw_body}')
 
-            if 'validationtoken=' in decoded_text:
-                token_extract = decoded_text.split('validationtoken=')[-1]
+            if 'validationtoken=' in raw_body:
+                token_extract = raw_body.split('validationtoken=')[-1]
                 return Response(str(token_extract), status=200, mimetype='text/plain')
     except Exception as error:
-        print(f'[19:25 Exception Error]: {error}')
+        print(f'-> [Parsing Error]: {error}')
 
     return Response(status=200)
 
