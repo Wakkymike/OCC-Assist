@@ -57,6 +57,8 @@
           <a href="{{ url_for('google_calendar_page') }}">Calendar</a>
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.tracking %}
             <a href="{{ url_for('tracking') }}">Tracking</a>
+          {% endif %}
+          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.roadworks_page %}
             <a href="{{ url_for('roadworks_page') }}">Roadworks</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.service_overview %}

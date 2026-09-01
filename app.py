@@ -39,6 +39,7 @@ SUPERADMIN_PASSWORD = os.environ.get('OCC_ASSIST_SUPERADMIN_PASSWORD')
 PERMISSIONS = {
     'live_updates': 'Daily overview',
     'tracking': 'Tracking',
+    'roadworks_page': 'Roadworks',
     'service_overview': 'Service overview',
     'contacts': 'Contacts',
     'driving_hours': 'Driving hours',
@@ -51,7 +52,7 @@ PAGE_PERMISSIONS = {
     'contacts_page': 'contacts',
     'driving_hours': 'driving_hours',
     'admin_page': 'admin_privileges',
-    'roadworks_page': 'tracking',
+    'roadworks_page': 'roadworks_page',
 }
 SNAPSHOT_RETENTION_DAYS = 14
 SNAPSHOT_RETENTION_SECONDS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
@@ -400,7 +401,7 @@ def sync_user_permissions_schema(database: sqlite3.Connection) -> None:
         for permission_key in PERMISSIONS:
             if permission_key in existing:
                 continue
-            default_enabled = tracking_enabled if permission_key in {'service_overview', 'contacts'} else False
+            default_enabled = tracking_enabled if permission_key in {'service_overview', 'contacts', 'roadworks_page'} else False
             database.execute(
                 'INSERT INTO permissions (user_id, permission_key, enabled) VALUES (?, ?, ?)',
                 (user_id, permission_key, int(default_enabled)),
@@ -917,7 +918,7 @@ def service_overview():
 
 
 @app.get('/roadworks')
-@login_required('tracking')
+@login_required('roadworks_page')
 def roadworks_page():
     return render_template('roadworks.html')
 
