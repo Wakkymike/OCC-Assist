@@ -896,7 +896,7 @@ def occ_live_adjustments_page():
         abort(403)
 
     return render_template(
-        'occ-live-adjustments.html',
+        'occ_live_adjustments.html',
         webhook_url=url_for('occ_live_adjustments_sharepoint_webhook', _external=True),
         webhook_status=get_live_adjustments_webhook_status(),
         adjustments=latest_adjustments_data,
@@ -4711,24 +4711,6 @@ def admin_data_status():
     return jsonify({'ok': True, 'status': get_data_health_status(force=force)})
 
 
-
-
-@app.route('/api/admin/gtfs-manual-lock', methods=['GET', 'POST'])
-@login_required('admin_privileges')
-def admin_gtfs_manual_lock():
-    if request.method == 'GET':
-        return jsonify({'ok': True, 'enabled': load_gtfs_manual_lock_state()})
-
-    payload = request.get_json(silent=True)
-    enabled = bool((payload or {}).get('enabled', True))
-    saved = save_gtfs_manual_lock_state(enabled)
-    return jsonify({
-        'ok': True,
-        'enabled': saved,
-        'message': 'Manual GTFS lock enabled.' if saved else 'Manual GTFS lock disabled.',
-    })
-
-
 @app.get('/api/occ-live-adjustments/status')
 @login_required('live_adjustments')
 def occ_live_adjustments_status():
@@ -4754,6 +4736,24 @@ def occ_live_adjustments_sharepoint_webhook():
         record_live_adjustments_webhook_event(data)
 
     return Response(status=200)
+
+
+
+
+@app.route('/api/admin/gtfs-manual-lock', methods=['GET', 'POST'])
+@login_required('admin_privileges')
+def admin_gtfs_manual_lock():
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'enabled': load_gtfs_manual_lock_state()})
+
+    payload = request.get_json(silent=True)
+    enabled = bool((payload or {}).get('enabled', True))
+    saved = save_gtfs_manual_lock_state(enabled)
+    return jsonify({
+        'ok': True,
+        'enabled': saved,
+        'message': 'Manual GTFS lock enabled.' if saved else 'Manual GTFS lock disabled.',
+    })
 
 
 @app.post('/api/gtfs/upload')
