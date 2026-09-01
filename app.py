@@ -795,7 +795,7 @@ def daily_overview():
 def occ_live_adjustments_page():
     return render_template(
         'occ-live-adjustments.html',
-        webhook_url=url_for('occ_live_adjustments_webhook', _external=True),
+        webhook_url=url_for('sharepoint_webhook', _external=True),
         webhook_status=get_live_adjustments_webhook_status(),
     )
 
@@ -4632,30 +4632,29 @@ def occ_live_adjustments_status():
     return jsonify(
         {
             'ok': True,
-            'webhookUrl': url_for('occ_live_adjustments_webhook', _external=True),
+            'webhookUrl': url_for('sharepoint_webhook', _external=True),
             'status': get_live_adjustments_webhook_status(),
         }
     )
 
 
-@app.route('/api/occ-live-adjustments', methods=['POST'])
-def occ_live_adjustments_webhook():
+@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
+def sharepoint_webhook():
     validation_token = request.args.get('validationtoken')
     if validation_token:
-        print(f'-> [FRESH HANDSHAKE SUCCESS] Received URL Token: {validation_token}')
+        print(f'--> [HANDSHAKE DETECTED] URL Token: {validation_token}')
         return Response(str(validation_token), status=200, mimetype='text/plain')
 
     try:
-        raw_body = request.data.decode('utf-8')
-        if raw_body:
-            print(f'-> [FRESH PAYLOAD SUCCESS] Received Body: {raw_body}')
-
-            if 'validationtoken=' in raw_body:
-                token_extract = raw_body.split('validationtoken=')[-1]
-                return Response(str(token_extract), status=200, mimetype='text/plain')
+        raw_body_text = request.data.decode('utf-8') if request.data else ''
+        if 'validationtoken=' in raw_body_text:
+            extracted = raw_body_text.split('validationtoken=')[-1]
+            print(f'--> [HANDSHAKE DETECTED] Body Token: {extracted}')
+            return Response(str(extracted), status=200, mimetype='text/plain')
     except Exception as error:
-        print(f'-> [Parsing Error]: {error}')
+        print(f'--> [Handshake Extraction Failure]: {error}')
 
+    print('[Webhook Event] Intercepted a new live modification ping.')
     return Response(status=200)
 
 
