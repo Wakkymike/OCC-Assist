@@ -301,6 +301,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id INTEGER PRIMARY KEY,
             rotacloud_ical_url TEXT NOT NULL DEFAULT '',
+            annual_leave_ical_url TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
@@ -341,10 +342,20 @@ def init_db() -> None:
         ON contacts (phone_number);
         '''
     )
+    sync_user_settings_schema(database)
     database.commit()
     ensure_superadmin(database)
     sync_user_permissions_schema(database)
     encrypt_existing_contacts(database)
+
+
+def sync_user_settings_schema(database: sqlite3.Connection) -> None:
+    columns = {
+        str(row['name'])
+        for row in database.execute('PRAGMA table_info(user_settings)').fetchall()
+    }
+    if 'annual_leave_ical_url' not in columns:
+        database.execute("ALTER TABLE user_settings ADD COLUMN annual_leave_ical_url TEXT NOT NULL DEFAULT ''")
 
 
 def cleanup_expired_snapshots(database: sqlite3.Connection, user_id: int | None = None) -> None:
@@ -732,8 +743,8 @@ def get_rotacloud_setting():
     user = get_current_user()
     if user is None:
         abort(401)
-    url = get_user_rotacloud_ical_url(int(user['id']))
-    return jsonify({'ok': True, 'rotacloudIcalUrl': url})
+    settings = get_user_calendar_settings(int(user['id']))
+    return jsonify({'ok': True, **settings})
 
 
 @app.post('/api/settings/password')
@@ -776,14 +787,16 @@ def update_rotacloud_setting():
         abort(401)
 
     payload = request.get_json(silent=True) or {}
-    raw_url = str(payload.get('rotacloudIcalUrl', ''))
+    raw_rota_url = str(payload.get('rotacloudIcalUrl', ''))
+    raw_annual_leave_url = str(payload.get('annualLeaveIcalUrl', ''))
     try:
-        normalized_url = validate_rotacloud_ical_url(raw_url)
+        normalized_rota_url = validate_ical_url(raw_rota_url)
+        normalized_annual_leave_url = validate_ical_url(raw_annual_leave_url)
     except ValueError as error:
         return jsonify({'ok': False, 'message': str(error)}), 400
 
-    save_user_rotacloud_ical_url(int(user['id']), normalized_url)
-    return jsonify({'ok': True, 'rotacloudIcalUrl': normalized_url})
+    save_user_calendar_settings(int(user['id']), normalized_rota_url, normalized_annual_leave_url)
+    return jsonify({'ok': True, 'rotacloudIcalUrl': normalized_rota_url, 'annualLeaveIcalUrl': normalized_annual_leave_url})
 
 
 @app.get('/api/overview/shifts')
@@ -793,20 +806,23 @@ def daily_overview_shifts():
     if user is None:
         abort(401)
 
-    ical_url = get_user_rotacloud_ical_url(int(user['id']))
-    if not ical_url:
+    settings = get_user_calendar_settings(int(user['id']))
+    ical_url = settings['rotacloudIcalUrl']
+    annual_leave_ical_url = settings['annualLeaveIcalUrl']
+    if not ical_url and not annual_leave_ical_url:
         return jsonify(
             {
                 'ok': True,
                 'configured': False,
-                'message': 'No RotaCloud iCal link configured yet.',
+                'message': 'No rota or annual leave iCal link configured yet.',
                 'currentShift': None,
                 'nextShift': None,
             }
         )
 
     try:
-        shifts = fetch_rotacloud_shift_overview(ical_url)
+        events = fetch_combined_rota_events(ical_url, annual_leave_ical_url)
+        shifts = build_shift_overview(events)
     except RuntimeError as error:
         return jsonify({'ok': False, 'configured': True, 'message': str(error)}), 503
 
@@ -827,8 +843,10 @@ def daily_overview_upcoming_shifts():
     if user is None:
         abort(401)
 
-    ical_url = get_user_rotacloud_ical_url(int(user['id']))
-    if not ical_url:
+    settings = get_user_calendar_settings(int(user['id']))
+    ical_url = settings['rotacloudIcalUrl']
+    annual_leave_ical_url = settings['annualLeaveIcalUrl']
+    if not ical_url and not annual_leave_ical_url:
         return jsonify(
             {
                 'ok': True,
@@ -837,7 +855,7 @@ def daily_overview_upcoming_shifts():
                 'offset': 0,
                 'periodLabel': '',
                 'shifts': [],
-                'message': 'No RotaCloud iCal link configured yet.',
+                'message': 'No rota or annual leave iCal link configured yet.',
             }
         )
 
@@ -857,7 +875,7 @@ def daily_overview_upcoming_shifts():
     now_utc = datetime.now(timezone.utc)
 
     try:
-        all_events = fetch_rotacloud_events(ical_url)
+        all_events = fetch_combined_rota_events(ical_url, annual_leave_ical_url)
     except RuntimeError as error:
         return jsonify({'ok': False, 'configured': True, 'message': str(error)}), 503
 
@@ -990,16 +1008,31 @@ def parse_bods_timestamp(value: str) -> datetime | None:
 
 
 def get_user_rotacloud_ical_url(user_id: int) -> str:
+    return get_user_calendar_settings(user_id)['rotacloudIcalUrl']
+
+
+def get_user_annual_leave_ical_url(user_id: int) -> str:
+    return get_user_calendar_settings(user_id)['annualLeaveIcalUrl']
+
+
+def get_user_calendar_settings(user_id: int) -> dict[str, str]:
     row = get_db().execute(
-        'SELECT rotacloud_ical_url FROM user_settings WHERE user_id = ?',
+        'SELECT rotacloud_ical_url, annual_leave_ical_url FROM user_settings WHERE user_id = ?',
         (user_id,),
     ).fetchone()
     if row is None:
-        return ''
-    return str(row['rotacloud_ical_url'] or '').strip()
+        return {'rotacloudIcalUrl': '', 'annualLeaveIcalUrl': ''}
+    return {
+        'rotacloudIcalUrl': str(row['rotacloud_ical_url'] or '').strip(),
+        'annualLeaveIcalUrl': str(row['annual_leave_ical_url'] or '').strip(),
+    }
 
 
 def validate_rotacloud_ical_url(value: str) -> str:
+    return validate_ical_url(value)
+
+
+def validate_ical_url(value: str) -> str:
     url = value.strip()
     if not url:
         return ''
@@ -1013,16 +1046,21 @@ def validate_rotacloud_ical_url(value: str) -> str:
 
 
 def save_user_rotacloud_ical_url(user_id: int, url: str) -> None:
+    save_user_calendar_settings(user_id, url, get_user_annual_leave_ical_url(user_id))
+
+
+def save_user_calendar_settings(user_id: int, rotacloud_url: str, annual_leave_url: str) -> None:
     database = get_db()
     database.execute(
         '''
-        INSERT INTO user_settings (user_id, rotacloud_ical_url)
-        VALUES (?, ?)
+        INSERT INTO user_settings (user_id, rotacloud_ical_url, annual_leave_ical_url)
+        VALUES (?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             rotacloud_ical_url = excluded.rotacloud_ical_url,
+            annual_leave_ical_url = excluded.annual_leave_ical_url,
             updated_at = CURRENT_TIMESTAMP
         ''',
-        (user_id, url),
+        (user_id, rotacloud_url, annual_leave_url),
     )
     database.commit()
 
@@ -1113,12 +1151,15 @@ def parse_ical_events(content: str) -> list[dict[str, object]]:
                 start = parse_ical_datetime(dtstart_data[1], dtstart_data[0])
                 end = parse_ical_datetime(dtend_data[1], dtend_data[0])
                 if start and end and end > start:
+                    all_day = dtstart_data[0].get('VALUE', '').upper() == 'DATE' and dtend_data[0].get('VALUE', '').upper() == 'DATE'
                     events.append(
                         {
                             'start': start.astimezone(timezone.utc),
                             'end': end.astimezone(timezone.utc),
                             'summary': summary_data[1] if summary_data else 'Shift',
                             'location': location_data[1] if location_data else '',
+                            'eventType': 'shift',
+                            'allDay': all_day,
                         }
                     )
 
@@ -1141,6 +1182,10 @@ def parse_ical_events(content: str) -> list[dict[str, object]]:
 
 def fetch_rotacloud_shift_overview(ical_url: str) -> dict[str, object]:
     events = fetch_rotacloud_events(ical_url)
+    return build_shift_overview(events)
+
+
+def build_shift_overview(events: list[dict[str, object]]) -> dict[str, object]:
     now_utc = datetime.now(timezone.utc)
 
     current_shift = None
@@ -1158,29 +1203,47 @@ def fetch_rotacloud_shift_overview(ical_url: str) -> dict[str, object]:
     def serialize_shift(shift: dict[str, object] | None) -> dict[str, object] | None:
         if shift is None:
             return None
-        start_local = shift['start'].astimezone(LONDON_TZ)
-        end_local = shift['end'].astimezone(LONDON_TZ)
-        return {
-            'summary': str(shift.get('summary') or 'Shift'),
-            'location': str(shift.get('location') or ''),
-            'startIso': shift['start'].isoformat(),
-            'endIso': shift['end'].isoformat(),
-            'windowLabel': f"{start_local.strftime('%a %d %b %H:%M')} - {end_local.strftime('%H:%M')}",
-        }
+        return serialize_shift_event(shift)
 
     return {
         'currentShift': serialize_shift(current_shift),
         'nextShift': serialize_shift(next_shift),
     }
 
-def fetch_rotacloud_events(ical_url: str) -> list[dict[str, object]]:
+
+def tag_annual_leave_events(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    tagged_events: list[dict[str, object]] = []
+    for event in events:
+        tagged_event = dict(event)
+        summary = str(tagged_event.get('summary') or '').strip()
+        summary_text = summary.lower()
+        if not summary:
+            summary = 'Annual leave'
+        elif not any(token in summary_text for token in ('annual leave', 'holiday', 'leave')):
+            summary = f'Annual leave: {summary}'
+        tagged_event['summary'] = summary
+        tagged_event['location'] = str(tagged_event.get('location') or 'Annual leave')
+        tagged_event['eventType'] = 'annual_leave'
+        tagged_events.append(tagged_event)
+    return tagged_events
+
+
+def fetch_combined_rota_events(rotacloud_ical_url: str, annual_leave_ical_url: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    if rotacloud_ical_url:
+        events.extend(fetch_rotacloud_events(rotacloud_ical_url))
+    if annual_leave_ical_url:
+        events.extend(tag_annual_leave_events(fetch_rotacloud_events(annual_leave_ical_url, 'annual leave iCal link')))
+    return sorted(events, key=lambda event: event['start'])
+
+def fetch_rotacloud_events(ical_url: str, feed_label: str = 'RotaCloud iCal link') -> list[dict[str, object]]:
     try:
         with urlopen(ical_url, timeout=20) as response:
             payload = response.read().decode('utf-8', errors='replace')
     except HTTPError as error:
-        raise RuntimeError(f'RotaCloud iCal link returned HTTP {error.code}.') from error
+        raise RuntimeError(f'{feed_label} returned HTTP {error.code}.') from error
     except URLError as error:
-        raise RuntimeError('Unable to reach the RotaCloud iCal link right now.') from error
+        raise RuntimeError(f'Unable to reach the {feed_label} right now.') from error
 
     return sorted(parse_ical_events(payload), key=lambda event: event['start'])
 
@@ -1213,12 +1276,21 @@ def get_period_bounds(scope: str, offset: int) -> tuple[datetime, datetime, str]
 def serialize_shift_event(event: dict[str, object]) -> dict[str, object]:
     start_local = event['start'].astimezone(LONDON_TZ)
     end_local = event['end'].astimezone(LONDON_TZ)
+    if event.get('allDay'):
+        last_day = (end_local - timedelta(days=1)).date()
+        if last_day <= start_local.date():
+            window_label = start_local.strftime('%a %d %b')
+        else:
+            window_label = f"{start_local.strftime('%a %d %b')} - {last_day.strftime('%a %d %b')}"
+    else:
+        window_label = f"{start_local.strftime('%a %d %b %H:%M')} - {end_local.strftime('%H:%M')}"
     return {
         'summary': str(event.get('summary') or 'Shift'),
         'location': str(event.get('location') or ''),
+        'eventType': str(event.get('eventType') or 'shift'),
         'startIso': event['start'].isoformat(),
         'endIso': event['end'].isoformat(),
-        'windowLabel': f"{start_local.strftime('%a %d %b %H:%M')} - {end_local.strftime('%H:%M')}",
+        'windowLabel': window_label,
     }
     
 def is_rest_day_or_holiday_event(event: dict[str, object]) -> bool:

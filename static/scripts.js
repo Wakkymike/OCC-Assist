@@ -2262,8 +2262,9 @@ function initializeSettingsPage() {
   const settingsForm = document.querySelector('#settings-form');
   const settingsMessage = document.querySelector('#settings-message');
   const icalInput = document.querySelector('#rotacloud-ical-url');
+  const annualLeaveIcalInput = document.querySelector('#annual-leave-ical-url');
 
-  if (!settingsForm || !settingsMessage || !icalInput) {
+  if (!settingsForm || !settingsMessage || !icalInput || !annualLeaveIcalInput) {
     return;
   }
 
@@ -2277,6 +2278,7 @@ function initializeSettingsPage() {
     }
 
     icalInput.value = payload.rotacloudIcalUrl || '';
+    annualLeaveIcalInput.value = payload.annualLeaveIcalUrl || '';
     setMessage(settingsMessage, '');
   };
 
@@ -2291,6 +2293,7 @@ function initializeSettingsPage() {
       },
       body: JSON.stringify({
         rotacloudIcalUrl: icalInput.value.trim(),
+        annualLeaveIcalUrl: annualLeaveIcalInput.value.trim(),
       }),
     });
 
