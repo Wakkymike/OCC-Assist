@@ -11,7 +11,7 @@ def test_sharepoint_webhook_validation_token_returns_plain_text_200():
 
     assert response.status_code == 200
     assert response.get_data(as_text=True) == 'abc123'
-    assert response.content_type == 'text/plain; charset=utf-8'
+    assert response.content_type == 'text/plain'
 
 
 def test_live_adjustments_page_validtoken_bypasses_login_for_sharepoint_handshake():
@@ -22,7 +22,7 @@ def test_live_adjustments_page_validtoken_bypasses_login_for_sharepoint_handshak
 
     assert response.status_code == 200
     assert response.get_data(as_text=True) == 'page-token-123'
-    assert response.content_type == 'text/plain; charset=utf-8'
+    assert response.content_type == 'text/plain'
 
 
 def test_sharepoint_webhook_accepts_and_stores_notification_payload(tmp_path, monkeypatch):

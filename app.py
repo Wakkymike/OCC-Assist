@@ -633,6 +633,10 @@ def get_sharepoint_validation_token() -> str | None:
     return None
 
 
+def sharepoint_validation_response(validation_token: str):
+    return validation_token, 200, {'Content-Type': 'text/plain'}
+
+
 def login_required(permission_key: str | None = None):
     def decorator(view_func):
         @wraps(view_func)
@@ -802,7 +806,7 @@ def daily_overview():
 def occ_live_adjustments_page():
     validation_token = get_sharepoint_validation_token()
     if validation_token is not None:
-        return validation_token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+        return sharepoint_validation_response(validation_token)
 
     user = get_current_user()
     if user is None:
@@ -4659,7 +4663,7 @@ def occ_live_adjustments_status():
 def occ_live_adjustments_sharepoint_webhook():
     validation_token = get_sharepoint_validation_token()
     if validation_token is not None:
-        return validation_token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+        return sharepoint_validation_response(validation_token)
 
     payload: object = request.get_json(silent=True)
     if payload is None:
