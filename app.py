@@ -75,6 +75,7 @@ GTFS_AUTO_DOWNLOAD_TIMEOUT_SECONDS = int(os.environ.get('OCC_ASSIST_GTFS_AUTO_DO
 ROADWORKS_DIR = INSTANCE_DIR / 'roadworks'
 ROADWORKS_EVENT_STORE_PATH = ROADWORKS_DIR / 'roadworks-events.json'
 ROADWORKS_ROUTE_MATCH_BUFFER_METERS = float(os.environ.get('OCC_ASSIST_ROADWORKS_ROUTE_BUFFER_METERS', '40'))
+ROADWORKS_UPCOMING_LOOKAHEAD_DAYS = int(os.environ.get('OCC_ASSIST_ROADWORKS_UPCOMING_LOOKAHEAD_DAYS', '14'))
 # Street Manager Open Data publishes to these three fixed SNS topics; only accept messages claiming one of them.
 STREET_MANAGER_SNS_TOPIC_ARNS = {
     'arn:aws:sns:eu-west-2:287813576808:prod-activity-topic': 'Activities',
@@ -3107,6 +3108,38 @@ def _save_roadworks_event_store(store: dict[str, object]) -> None:
     tmp_path.replace(ROADWORKS_EVENT_STORE_PATH)
 
 
+def serialize_visible_roadworks_entry(entry: dict[str, object], now: datetime | None = None) -> dict[str, object] | None:
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        current_time = current_time.astimezone(timezone.utc)
+
+    start_time = parse_session_timestamp(entry.get('startDate'))
+    if start_time is not None and current_time < start_time - timedelta(days=ROADWORKS_UPCOMING_LOOKAHEAD_DAYS):
+        return None
+
+    serialized = dict(entry)
+    serialized['sourceStatus'] = str(entry.get('status') or '')
+    is_upcoming = start_time is not None and current_time < start_time
+    serialized['isUpcoming'] = is_upcoming
+    serialized['lifecycleStatus'] = 'upcoming' if is_upcoming else 'active'
+    if is_upcoming:
+        serialized['status'] = 'Upcoming'
+    return serialized
+
+
+def get_visible_roadworks_entries(store: dict[str, object], now: datetime | None = None) -> list[dict[str, object]]:
+    entries = []
+    for entry in store.get('entries', {}).values():
+        if not isinstance(entry, dict):
+            continue
+        visible_entry = serialize_visible_roadworks_entry(entry, now=now)
+        if visible_entry is not None:
+            entries.append(visible_entry)
+    return entries
+
+
 def record_street_manager_subscription_confirmed(topic_arn: str) -> None:
     with _roadworks_event_store_lock:
         store = _load_roadworks_event_store()
@@ -4506,7 +4539,7 @@ def clear_roadworks_store():
 @login_required('tracking')
 def tracking_roadworks():
     store = _load_roadworks_event_store()
-    entries = list(store.get('entries', {}).values())
+    entries = get_visible_roadworks_entries(store)
     return jsonify(
         {
             'ok': True,
@@ -4522,7 +4555,7 @@ def tracking_roadworks():
 @login_required('tracking')
 def roadworks_by_route():
     store = _load_roadworks_event_store()
-    entries = list(store.get('entries', {}).values())
+    entries = get_visible_roadworks_entries(store)
 
     gtfs_cache = load_gtfs_cache(allow_rebuild=False)
     routes = (gtfs_cache or {}).get('routes') or []

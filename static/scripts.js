@@ -832,10 +832,11 @@ function initializeMap() {
       const properties = feature.properties || {};
       const ragClass = { red: 'red', amber: 'yellow', green: 'green' }[properties.rag] || 'neutral';
       const dateRange = [properties.startDate, properties.endDate].map(formatRoadworksDateTime).filter(Boolean).join(' to ');
+      const badgeLabel = properties.isUpcoming ? 'Upcoming' : String(properties.severity || 'Unknown');
       const html = `
         <div class="roadworks-popup">
           <p class="roadworks-popup-title">${escapeHtml(String(properties.title || 'Roadworks'))}</p>
-          <span class="sidebar-pill punctuality-pill ${ragClass}">${escapeHtml(String(properties.severity || 'Unknown'))}</span>
+          <span class="sidebar-pill punctuality-pill ${ragClass}">${escapeHtml(badgeLabel)}</span>
           <p class="roadworks-popup-line">Status: ${escapeHtml(String(properties.status || 'Unknown'))}</p>
           ${properties.routeLabels ? `<p class="roadworks-popup-line">Affects route(s): ${escapeHtml(String(properties.routeLabels))}</p>` : ''}
           ${dateRange ? `<p class="roadworks-popup-line">${escapeHtml(dateRange)}</p>` : ''}
@@ -946,6 +947,7 @@ function initializeMap() {
               title: item.title,
               severity: item.severity,
               status: item.status,
+              isUpcoming: Boolean(item.isUpcoming),
               rag: item.rag,
               startDate: item.startDate,
               endDate: item.endDate,
@@ -1370,6 +1372,7 @@ function initializeRoadworksPage() {
     listEl.innerHTML = groups.map((group) => {
       const roadworksMarkup = group.roadworks.map((item) => {
         const dateRange = [item.startDate, item.endDate].map(formatRoadworksDateTime).filter(Boolean).join(' to ');
+        const badgeLabel = item.isUpcoming ? 'Upcoming' : String(item.severity || 'Unknown');
         return `
           <article class="service-card">
             <div class="service-card-head">
@@ -1377,7 +1380,7 @@ function initializeRoadworksPage() {
                 <p class="service-card-route">${escapeHtml(String(item.title || 'Roadworks'))}</p>
                 <strong>${escapeHtml(String(item.promoter || 'Unknown promoter'))}</strong>
               </div>
-              <span class="sidebar-pill punctuality-pill ${ragPillClass(item.rag)}">${escapeHtml(String(item.severity || 'Unknown'))}</span>
+              <span class="sidebar-pill punctuality-pill ${ragPillClass(item.rag)}">${escapeHtml(badgeLabel)}</span>
             </div>
             <dl class="service-detail-list">
               <div><dt>Permit reference</dt><dd>${escapeHtml(String(item.reference || 'Unknown'))}</dd></div>
@@ -1390,7 +1393,7 @@ function initializeRoadworksPage() {
       }).join('');
 
       return `
-        <section class="service-group" data-route-group="${escapeHtml(group.routeId)}">
+        <section class="service-group is-collapsed" data-route-group="${escapeHtml(group.routeId)}">
           <header class="service-group-head">
             <div>
               <p class="brand-subtitle">Route ${escapeHtml(group.routeLabel)}</p>
@@ -1398,7 +1401,7 @@ function initializeRoadworksPage() {
             </div>
             <div class="service-group-actions">
               <span class="service-count-pill">${group.roadworks.length} roadwork${group.roadworks.length === 1 ? '' : 's'}</span>
-              <button type="button" class="service-group-toggle" aria-expanded="true" aria-label="Collapse route ${escapeHtml(group.routeLabel)}">
+              <button type="button" class="service-group-toggle" aria-expanded="false" aria-label="Expand route ${escapeHtml(group.routeLabel)}">
                 <span class="chevron">▾</span>
               </button>
             </div>
@@ -1456,6 +1459,8 @@ function initializeRoadworksPage() {
     const willCollapse = !group.classList.contains('is-collapsed');
     group.classList.toggle('is-collapsed', willCollapse);
     toggle.setAttribute('aria-expanded', willCollapse ? 'false' : 'true');
+    const routeLabel = group.querySelector('h2')?.textContent?.trim() || 'route';
+    toggle.setAttribute('aria-label', `${willCollapse ? 'Expand' : 'Collapse'} route ${routeLabel}`);
   });
 
   if (searchInput) {
