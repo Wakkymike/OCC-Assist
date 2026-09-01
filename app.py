@@ -4727,13 +4727,20 @@ def occ_live_adjustments_status():
 def occ_live_adjustments_sharepoint_webhook():
     validation_token = request.args.get('validationtoken')
     if validation_token:
+        print(f'[Webhook Handshake] Received validation token: {validation_token}')
         response = Response(str(validation_token), status=200, mimetype='text/plain')
         response.headers['Content-Type'] = 'text/plain'
         return response
 
-    data = request.get_json(silent=True)
-    if data and 'value' in data:
-        record_live_adjustments_webhook_event(data)
+    try:
+        if request.is_json:
+            payload = request.get_json(silent=True)
+            print('[Webhook Data Received] Raw JSON Payload:')
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"[Webhook Data Received] Raw Text Data: {request.data.decode('utf-8')}")
+    except Exception as error:
+        print(f'[Webhook Processing Error] Failed to read incoming data: {error}')
 
     return Response(status=200)
 

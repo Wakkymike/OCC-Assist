@@ -32,8 +32,7 @@ def test_live_adjustments_page_validtoken_bypasses_login_for_sharepoint_handshak
     assert response.content_type == 'text/plain'
 
 
-def test_sharepoint_webhook_accepts_and_stores_notification_payload(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_DIR', tmp_path)
+def test_sharepoint_webhook_accepts_notification_payload_without_storing(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, 'LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH', tmp_path / 'sharepoint-webhook-events.json')
     app_module.app.config['TESTING'] = True
     client = app_module.app.test_client()
@@ -45,11 +44,7 @@ def test_sharepoint_webhook_accepts_and_stores_notification_payload(tmp_path, mo
 
     assert response.status_code == 200
     assert response.get_data(as_text=True) == ''
-
-    store = json.loads((tmp_path / 'sharepoint-webhook-events.json').read_text(encoding='utf-8'))
-    assert store['receivedCount'] == 1
-    assert store['events'][0]['notificationCount'] == 1
-    assert store['events'][0]['payload']['value'][0]['subscriptionId'] == 'sub-1'
+    assert not (tmp_path / 'sharepoint-webhook-events.json').exists()
 
 
 def test_live_adjustments_page_post_accepts_notification_without_login(tmp_path, monkeypatch):
