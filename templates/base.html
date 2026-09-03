@@ -22,14 +22,11 @@
         trackingStopsUrl: {{ tracking_stops_url | tojson }},
         trackingStaticRoutesUrl: {{ url_for('tracking_static_routes') | tojson }},
         serviceOverviewUrl: {{ service_overview_url | tojson }},
-        contactsApiUrl: {{ url_for('list_contacts') | tojson }},
-        createContactUrl: {{ url_for('create_contact') | tojson }},
         drivingSnapshotsUrl: {{ url_for('list_driving_snapshots') | tojson }},
         gtfsStatusUrl: {{ url_for('gtfs_status') | tojson }},
         gtfsUploadUrl: {{ url_for('upload_gtfs') | tojson }},
         gtfsManualLockUrl: {{ (admin_gtfs_manual_lock_url | default('', true)) | tojson }},
         adminDataStatusUrl: {{ (admin_data_status_url | default('', true)) | tojson }},
-        contactsEncryptionStatusUrl: {{ (admin_contacts_encryption_status_url | default('', true)) | tojson }},
         trackingRoadworksUrl: {{ (tracking_roadworks_url | default('', true)) | tojson }},
         roadworksStatusUrl: {{ (roadworks_status_url | default('', true)) | tojson }},
         roadworksClearUrl: {{ (roadworks_clear_url | default('', true)) | tojson }},
@@ -66,9 +63,6 @@
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.service_overview %}
             <a href="{{ url_for('service_overview') }}">Service Overview</a>
-          {% endif %}
-          {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.contacts %}
-            <a href="{{ url_for('contacts_page') }}">Contacts</a>
           {% endif %}
           {% if current_user.is_superadmin or current_user.permissions.admin_privileges or current_user.permissions.driving_hours %}
             <a href="{{ url_for('driving_hours') }}">Driving Hours</a>

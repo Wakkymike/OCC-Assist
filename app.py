@@ -25,7 +25,6 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
-from cryptography.fernet import Fernet, InvalidToken
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -42,7 +41,6 @@ PERMISSIONS = {
     'tracking': 'Tracking',
     'roadworks_page': 'Roadworks',
     'service_overview': 'Service overview',
-    'contacts': 'Contacts',
     'driving_hours': 'Driving hours',
     'admin_privileges': 'Admin privileges',
 }
@@ -51,7 +49,6 @@ PAGE_PERMISSIONS = {
     'occ_live_adjustments_page': 'live_adjustments',
     'tracking': 'tracking',
     'service_overview': 'service_overview',
-    'contacts_page': 'contacts',
     'driving_hours': 'driving_hours',
     'admin_page': 'admin_privileges',
     'roadworks_page': 'roadworks_page',
@@ -110,10 +107,6 @@ _bods_vehicle_cache: dict[str, object] = {
     'hasData': False,
 }
 
-CONTACT_ENCRYPTION_PREFIX = 'enc:v1:'
-_contacts_cipher: Fernet | None = None
-
-
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('OCC_ASSIST_SECRET_KEY', 'change-me-before-production')
 app.config['MAPBOX_TOKEN'] = os.environ.get('OCC_ASSIST_MAPBOX_TOKEN', '')
@@ -144,115 +137,17 @@ def get_db() -> sqlite3.Connection:
     return g.db
 
 
-def get_contacts_cipher() -> Fernet:
-    global _contacts_cipher
-    if _contacts_cipher is not None:
-        return _contacts_cipher
-
-    explicit_key = str(os.environ.get('OCC_ASSIST_CONTACTS_ENCRYPTION_KEY', '')).strip()
-    if explicit_key:
-        key_bytes = explicit_key.encode('utf-8')
-    else:
-        secret = str(os.environ.get('OCC_ASSIST_CONTACTS_ENCRYPTION_SECRET') or app.config.get('SECRET_KEY') or '').strip()
-        if not secret:
-            raise RuntimeError('Missing contacts encryption secret.')
-        key_bytes = base64.urlsafe_b64encode(hashlib.sha256(secret.encode('utf-8')).digest())
-
-    _contacts_cipher = Fernet(key_bytes)
-    return _contacts_cipher
-
-
 def is_encrypted_contact_value(value: object) -> bool:
-    return isinstance(value, str) and value.startswith(CONTACT_ENCRYPTION_PREFIX)
+    return False
 
 
 def encrypt_contact_value(value: object) -> str:
-    plain = str(value or '')
-    if is_encrypted_contact_value(plain):
-        return plain
-    token = get_contacts_cipher().encrypt(plain.encode('utf-8')).decode('utf-8')
-    return f"{CONTACT_ENCRYPTION_PREFIX}{token}"
+    return str(value or '')
 
 
 def decrypt_contact_value(value: object) -> str:
-    if value is None:
-        return ''
-    text = str(value)
-    if not is_encrypted_contact_value(text):
-        return text
+    return str(value or '')
 
-    token_bytes = text[len(CONTACT_ENCRYPTION_PREFIX):].encode('utf-8')
-    try:
-        return get_contacts_cipher().decrypt(token_bytes).decode('utf-8')
-    except InvalidToken:
-        # Fallback for data encrypted before runtime env secrets were loaded.
-        legacy_default_secret = 'change-me-before-production'
-        current_secret = str(os.environ.get('OCC_ASSIST_CONTACTS_ENCRYPTION_SECRET') or app.config.get('SECRET_KEY') or '').strip()
-        if legacy_default_secret and legacy_default_secret != current_secret:
-            legacy_key = base64.urlsafe_b64encode(hashlib.sha256(legacy_default_secret.encode('utf-8')).digest())
-            try:
-                return Fernet(legacy_key).decrypt(token_bytes).decode('utf-8')
-            except InvalidToken:
-                pass
-        return ''
-
-def encrypt_existing_contacts(database: sqlite3.Connection) -> None:
-    rows = database.execute(
-        '''
-        SELECT id, first_name, last_name, job_role, job_title, depot_location, phone_number
-        FROM contacts
-        '''
-    ).fetchall()
-    for row in rows:
-        updates: dict[str, str] = {}
-        for column in ('first_name', 'last_name', 'job_role', 'job_title', 'depot_location', 'phone_number'):
-            current_value = row[column]
-            if current_value is None:
-                continue
-
-            current_text = str(current_value)
-            plain_value = decrypt_contact_value(current_text)
-
-            is_primary_encrypted = False
-            if is_encrypted_contact_value(current_text):
-                token_bytes = current_text[len(CONTACT_ENCRYPTION_PREFIX):].encode('utf-8')
-                try:
-                    get_contacts_cipher().decrypt(token_bytes)
-                    is_primary_encrypted = True
-                except InvalidToken:
-                    is_primary_encrypted = False
-
-            if is_primary_encrypted:
-                continue
-
-            updates[column] = encrypt_contact_value(plain_value)
-
-        if not updates:
-            continue
-
-        database.execute(
-            '''
-            UPDATE contacts
-            SET first_name = COALESCE(?, first_name),
-                last_name = COALESCE(?, last_name),
-                job_role = COALESCE(?, job_role),
-                job_title = COALESCE(?, job_title),
-                depot_location = COALESCE(?, depot_location),
-                phone_number = COALESCE(?, phone_number)
-            WHERE id = ?
-            ''',
-            (
-                updates.get('first_name'),
-                updates.get('last_name'),
-                updates.get('job_role'),
-                updates.get('job_title'),
-                updates.get('depot_location'),
-                updates.get('phone_number'),
-                int(row['id']),
-            ),
-        )
-
-    database.commit()
 
 @app.teardown_appcontext
 def close_db(_: object | None) -> None:
@@ -285,7 +180,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS driving_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            driver_name TEXT NOT NULL,
+            driver_name TEXT NOT NULL DEFAULT '',
             employee_number TEXT NOT NULL,
             segment_summary TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -348,10 +243,20 @@ def init_db() -> None:
         '''
     )
     sync_user_settings_schema(database)
+    scrub_legacy_snapshot_driver_names(database)
     database.commit()
     ensure_superadmin(database)
     sync_user_permissions_schema(database)
-    encrypt_existing_contacts(database)
+
+
+def scrub_legacy_snapshot_driver_names(database: sqlite3.Connection) -> None:
+    columns = {
+        str(row['name'])
+        for row in database.execute('PRAGMA table_info(driving_snapshots)').fetchall()
+    }
+    if 'driver_name' in columns:
+        database.execute("UPDATE driving_snapshots SET driver_name = '' WHERE driver_name <> ''")
+        database.commit()
 
 
 def sync_user_settings_schema(database: sqlite3.Connection) -> None:
@@ -417,7 +322,7 @@ def sync_user_permissions_schema(database: sqlite3.Connection) -> None:
         for permission_key in PERMISSIONS:
             if permission_key in existing:
                 continue
-            default_enabled = tracking_enabled if permission_key in {'service_overview', 'contacts', 'roadworks_page'} else False
+            default_enabled = tracking_enabled if permission_key in {'service_overview', 'roadworks_page'} else False
             database.execute(
                 'INSERT INTO permissions (user_id, permission_key, enabled) VALUES (?, ?, ?)',
                 (user_id, permission_key, int(default_enabled)),
@@ -677,7 +582,6 @@ def inject_user_context() -> dict[str, object]:
         'tracking_stops_url': url_for('tracking_stops'),
         'service_overview_url': url_for('service_overview'),
         'admin_data_status_url': url_for('admin_data_status'),
-        'admin_contacts_encryption_status_url': url_for('admin_contacts_encryption_status'),
         'admin_gtfs_manual_lock_url': url_for('admin_gtfs_manual_lock'),
         'tracking_roadworks_url': url_for('tracking_roadworks'),
         'roadworks_status_url': url_for('roadworks_status'),
@@ -1005,12 +909,6 @@ def service_overview():
 @login_required('roadworks_page')
 def roadworks_page():
     return render_template('roadworks.html')
-
-
-@app.get('/contacts')
-@login_required('contacts')
-def contacts_page():
-    return render_template('contacts.html')
 
 
 def get_xml_text(node: ET.Element | None, path: str) -> str:
@@ -4594,13 +4492,6 @@ def gtfs_status():
 
 
 
-@app.get('/api/admin/contacts-encryption-status')
-@login_required('admin_privileges')
-def admin_contacts_encryption_status():
-    status = get_contacts_encryption_status()
-    return jsonify({'ok': True, 'status': status})
-
-
 @app.get('/api/admin/data-status')
 @login_required('admin_privileges')
 def admin_data_status():
@@ -5018,7 +4909,6 @@ def list_driving_snapshots():
         '''
         SELECT
             id,
-            driver_name,
             employee_number,
             segment_summary,
             status,
@@ -5040,7 +4930,6 @@ def list_driving_snapshots():
     snapshots = [
         {
             'id': row['id'],
-            'driverName': row['driver_name'],
             'employeeNumber': row['employee_number'],
             'segmentSummary': row['segment_summary'],
             'status': row['status'],
@@ -5068,10 +4957,9 @@ def create_driving_snapshot():
         abort(401)
 
     payload = request.get_json(silent=True) or {}
-    driver_name = str(payload.get('driverName', '')).strip()
     employee_number = str(payload.get('employeeNumber', '')).strip()
-    if not driver_name or not employee_number:
-        return jsonify({'ok': False, 'message': 'Driver name and employee number are required.'}), 400
+    if not employee_number:
+        return jsonify({'ok': False, 'message': 'Employee number is required.'}), 400
 
     try:
         segments = validate_segments(payload.get('segments'))
@@ -5103,11 +4991,11 @@ def create_driving_snapshot():
             current_continuous_driving_minutes,
             non_driving_first_window_minutes,
             created_at_epoch
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
         (
             int(user['id']),
-            driver_name,
+            '',
             employee_number,
             segment_summary,
             compliance['status'],
@@ -5127,7 +5015,6 @@ def create_driving_snapshot():
             'ok': True,
             'snapshot': {
                 'id': cursor.lastrowid,
-                'driverName': driver_name,
                 'employeeNumber': employee_number,
                 'segmentSummary': segment_summary,
                 'status': compliance['status'],
@@ -5160,8 +5047,6 @@ def users_page():
 
 
 
-@app.get('/api/contacts')
-@login_required('contacts')
 def list_contacts():
     query = str(request.args.get('q', '')).strip().lower()
     normalized_query = re.sub(r'[^0-9]', '', query)
@@ -5214,8 +5099,6 @@ def list_contacts():
     return jsonify({'ok': True, 'contacts': contacts, 'count': len(contacts)})
 
 
-@app.post('/api/contacts')
-@login_required('admin_privileges')
 def create_contact():
     actor = get_current_user()
     payload = request.get_json(silent=True) or {}
@@ -5310,8 +5193,6 @@ def create_contact():
 
 
 
-@app.patch('/api/contacts/<int:contact_id>')
-@login_required('admin_privileges')
 def update_contact(contact_id: int):
     payload = request.get_json(silent=True) or {}
 
@@ -5369,8 +5250,6 @@ def update_contact(contact_id: int):
 
 
 
-@app.delete('/api/contacts/<int:contact_id>')
-@login_required('admin_privileges')
 def delete_contact(contact_id: int):
     database = get_db()
     existing = database.execute('SELECT id FROM contacts WHERE id = ?', (contact_id,)).fetchone()

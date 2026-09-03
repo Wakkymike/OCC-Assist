@@ -63,7 +63,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeDrivingHours();
   initializeDailyOverview();
   initializeSettingsPage();
-  initializeContactsPage();
 });
 
 function setMessage(element, message, variant = '') {
@@ -1576,12 +1575,11 @@ function initializeDrivingHours() {
   const savedSummary = document.querySelector('#saved-summary');
   const snapshotSearchInput = document.querySelector('#snapshot-search');
   const activeUserLabel = document.querySelector('#active-user-label');
-  const driverNameInput = document.querySelector('#driver-name');
   const employeeNumberInput = document.querySelector('#employee-number');
 
   if (
     !app || !segmentForm || !segmentList || !clearButton || !cancelEditButton || !metricsPanel || !alertsPanel || !saveSnapshotButton
-    || !savedSnapshotsPanel || !savedSummary || !snapshotSearchInput || !driverNameInput || !employeeNumberInput
+    || !savedSnapshotsPanel || !savedSummary || !snapshotSearchInput || !employeeNumberInput
   ) {
     return;
   }
@@ -1791,7 +1789,6 @@ function initializeDrivingHours() {
 
     return snapshots.filter((snapshot) => {
       const haystack = [
-        snapshot.driverName,
         snapshot.employeeNumber,
       ]
         .map((item) => normalizeForSearch(item))
@@ -1831,8 +1828,7 @@ function initializeDrivingHours() {
         return `
           <article class="saved-item ${statusClass}">
             <header class="saved-head">
-              <strong>${escapeHtml(snapshot.driverName)}</strong>
-              <span>${escapeHtml(snapshot.employeeNumber)}</span>
+              <strong>Employee ${escapeHtml(snapshot.employeeNumber)}</strong>
               <time>${timestamp.toLocaleString()}</time>
             </header>
             <p class="saved-summary-line">${escapeHtml(snapshot.segmentSummary)}</p>
@@ -2035,11 +2031,10 @@ function initializeDrivingHours() {
   });
 
   saveSnapshotButton.addEventListener('click', async () => {
-    const driverName = driverNameInput.value.trim();
     const employeeNumber = employeeNumberInput.value.trim();
 
-    if (!driverName || !employeeNumber) {
-      setMessage(formMessage, 'Enter the driver name and employee number before saving.', 'error');
+    if (!employeeNumber) {
+      setMessage(formMessage, 'Enter the employee number before saving.', 'error');
       return;
     }
 
@@ -2067,7 +2062,6 @@ function initializeDrivingHours() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        driverName,
         employeeNumber,
         segments: orderedSegments,
       }),

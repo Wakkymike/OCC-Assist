@@ -44,64 +44,6 @@
       </section>
     </section>
 
-    <section class="admin-card" id="admin-contacts-card">
-      <div class="section-row">
-        <h2>Contacts Directory</h2>
-      </div>
-      <p class="section-copy">Add internal contacts for operational lookup. Use search to find contacts for viewing, editing, or deleting so the full directory does not take up page space.</p>
-      <form id="contact-form" class="contacts-form" novalidate>
-        <input type="hidden" id="contact-edit-id" name="contactEditId" value="" />
-        <div class="field-grid two-col">
-          <div class="field">
-            <label for="contact-first-name">First name</label>
-            <input type="text" id="contact-first-name" name="firstName" required />
-          </div>
-          <div class="field">
-            <label for="contact-last-name">Last name</label>
-            <input type="text" id="contact-last-name" name="lastName" required />
-          </div>
-          <div class="field">
-            <label for="contact-job-role">Job</label>
-            <input type="text" id="contact-job-role" name="jobRole" required />
-          </div>
-          <div class="field">
-            <label for="contact-depot-location">Depot or location</label>
-            <input type="text" id="contact-depot-location" name="depotLocation" required />
-          </div>
-          <div class="field">
-            <label for="contact-phone-number">Phone number</label>
-            <input type="text" id="contact-phone-number" name="phoneNumber" required />
-          </div>
-        </div>
-        <div class="contacts-toggle-row">
-          <label class="permission-option">
-            <input type="checkbox" id="contact-important" name="isImportant" />
-            <span>Mark as important contact</span>
-          </label>
-          <label class="permission-option">
-            <input type="checkbox" id="contact-private" name="isPrivate" />
-            <span>Do not distribute outside company</span>
-          </label>
-        </div>
-        <div class="contacts-form-actions">
-          <button class="btn primary" type="submit" id="save-contact-button">Add contact</button>
-          <button class="btn secondary compact" type="button" id="cancel-contact-edit" hidden>Cancel edit</button>
-        </div>
-      </form>
-      <div id="contact-form-message" class="message" aria-live="polite"></div>
-
-      <div class="contacts-admin-search">
-        <label for="contacts-admin-search-query">Search contacts</label>
-        <div class="contacts-admin-search-row">
-          <input type="search" id="contacts-admin-search-query" placeholder="Name, job title, location, or phone" autocomplete="off" />
-          <button class="btn secondary compact" type="button" id="contacts-admin-search-submit">Search</button>
-          <button class="btn secondary compact" type="button" id="contacts-admin-search-clear">Clear</button>
-        </div>
-      </div>
-      <div id="contacts-admin-message" class="message" aria-live="polite"></div>
-      <div id="contacts-admin-list" class="contacts-admin-list"></div>
-    </section>
-
     <section class="admin-card">
       <div class="section-row">
         <h2>Data Health (Auto Checks)</h2>
@@ -111,15 +53,6 @@
       <div id="admin-bods-status" class="message" aria-live="polite"></div>
       <div id="admin-gtfs-status" class="message" aria-live="polite"></div>
       <div id="admin-data-status-message" class="message" aria-live="polite"></div>
-    </section>
-
-    <section class="admin-card">
-      <div class="section-row">
-        <h2>Contacts Encryption Health</h2>
-        <button class="btn secondary compact" type="button" id="refresh-contacts-encryption-status">Refresh</button>
-      </div>
-      <p id="contacts-encryption-summary" class="map-note">No encryption status loaded yet.</p>
-      <div id="contacts-encryption-message" class="message" aria-live="polite"></div>
     </section>
 
     <section class="admin-card gtfs-upload-card">
