@@ -23,7 +23,7 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
-from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -37,7 +37,6 @@ SUPERADMIN_EMAIL = os.environ.get('OCC_ASSIST_SUPERADMIN_EMAIL', 'michael.dodswo
 SUPERADMIN_PASSWORD = os.environ.get('OCC_ASSIST_SUPERADMIN_PASSWORD')
 PERMISSIONS = {
     'live_updates': 'Daily overview',
-    'live_adjustments': 'OCC Live Adjustments',
     'tracking': 'Tracking',
     'roadworks_page': 'Roadworks',
     'service_overview': 'Service overview',
@@ -46,7 +45,6 @@ PERMISSIONS = {
 }
 PAGE_PERMISSIONS = {
     'daily_overview': 'live_updates',
-    'occ_live_adjustments_page': 'live_adjustments',
     'tracking': 'tracking',
     'service_overview': 'service_overview',
     'driving_hours': 'driving_hours',
@@ -68,9 +66,6 @@ GTFS_ALLOWED_ROUTE_PREFIXES = [
     for value in str(os.environ.get('OCC_ASSIST_GTFS_ALLOWED_ROUTE_PREFIXES', '')).split(',')
     if value.strip()
 ]
-LIVE_ADJUSTMENTS_DIR = INSTANCE_DIR / 'live-adjustments'
-LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH = LIVE_ADJUSTMENTS_DIR / 'sharepoint-webhook-events.json'
-LIVE_ADJUSTMENTS_MAX_STORED_EVENTS = int(os.environ.get('OCC_ASSIST_LIVE_ADJUSTMENTS_MAX_STORED_EVENTS', '100'))
 DATA_HEALTH_STATUS_PATH = INSTANCE_DIR / 'data-health-status.json'
 AUTO_DATA_CHECK_INTERVAL_SECONDS = int(os.environ.get('OCC_ASSIST_AUTO_DATA_CHECK_INTERVAL_SECONDS', '900'))
 GTFS_AUTO_DOWNLOAD_URL = str(os.environ.get('OCC_ASSIST_GTFS_AUTO_DOWNLOAD_URL', '')).strip()
@@ -340,70 +335,6 @@ def sync_user_permissions_schema(database: sqlite3.Connection) -> None:
                 )
 
     database.commit()
-
-
-_live_adjustments_webhook_store_lock = threading.Lock()
-
-
-def _empty_live_adjustments_webhook_store() -> dict[str, object]:
-    return {'events': [], 'lastReceivedAt': '', 'receivedCount': 0}
-
-
-def _load_live_adjustments_webhook_store() -> dict[str, object]:
-    if not LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH.exists():
-        return _empty_live_adjustments_webhook_store()
-    try:
-        store = json.loads(LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return _empty_live_adjustments_webhook_store()
-    if not isinstance(store, dict):
-        return _empty_live_adjustments_webhook_store()
-    store.setdefault('events', [])
-    store.setdefault('lastReceivedAt', '')
-    store.setdefault('receivedCount', 0)
-    return store
-
-
-def _save_live_adjustments_webhook_store(store: dict[str, object]) -> None:
-    LIVE_ADJUSTMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_path = LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH.with_name(f'{LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH.name}.{secrets.token_hex(8)}.tmp')
-    tmp_path.write_text(json.dumps(store), encoding='utf-8')
-    tmp_path.replace(LIVE_ADJUSTMENTS_WEBHOOK_STORE_PATH)
-
-
-def record_live_adjustments_webhook_event(payload: object) -> dict[str, object]:
-    received_at = datetime.now(timezone.utc).isoformat()
-    notification_count = len(payload.get('value') or []) if isinstance(payload, dict) and isinstance(payload.get('value'), list) else 0
-
-    with _live_adjustments_webhook_store_lock:
-        store = _load_live_adjustments_webhook_store()
-        events = store.get('events')
-        if not isinstance(events, list):
-            events = []
-        events.append(
-            {
-                'receivedAt': received_at,
-                'contentType': str(request.headers.get('Content-Type') or ''),
-                'notificationCount': notification_count,
-                'payload': payload,
-            }
-        )
-        store['events'] = events[-LIVE_ADJUSTMENTS_MAX_STORED_EVENTS:]
-        store['lastReceivedAt'] = received_at
-        store['receivedCount'] = int(store.get('receivedCount') or 0) + 1
-        _save_live_adjustments_webhook_store(store)
-        return store
-
-
-def get_live_adjustments_webhook_status() -> dict[str, object]:
-    store = _load_live_adjustments_webhook_store()
-    events = store.get('events') if isinstance(store.get('events'), list) else []
-    return {
-        'lastReceivedAt': str(store.get('lastReceivedAt') or ''),
-        'receivedCount': int(store.get('receivedCount') or 0),
-        'storedEventCount': len(events),
-        'recentEvents': list(reversed(events[-5:])),
-    }
 
 
 def fetch_user_by_email(email: str) -> sqlite3.Row | None:
@@ -692,16 +623,6 @@ def session_info():
 @login_required('live_updates')
 def daily_overview():
     return render_template('daily-overview.html')
-
-
-@app.get('/occ-live-adjustments')
-@login_required('live_adjustments')
-def occ_live_adjustments_page():
-    return render_template(
-        'occ-live-adjustments.html',
-        webhook_url=url_for('sharepoint_webhook', _external=True),
-        webhook_status=get_live_adjustments_webhook_status(),
-    )
 
 
 @app.get('/google-calendar')
@@ -4515,38 +4436,6 @@ def admin_gtfs_manual_lock():
         'enabled': saved,
         'message': 'Manual GTFS lock enabled.' if saved else 'Manual GTFS lock disabled.',
     })
-
-
-@app.get('/api/occ-live-adjustments/status')
-@login_required('live_adjustments')
-def occ_live_adjustments_status():
-    return jsonify(
-        {
-            'ok': True,
-            'webhookUrl': url_for('sharepoint_webhook', _external=True),
-            'status': get_live_adjustments_webhook_status(),
-        }
-    )
-
-
-@app.route('/api/occ-live-adjustments/sharepoint-webhook', methods=['POST'])
-def sharepoint_webhook():
-    validation_token = request.args.get('validationtoken')
-    if validation_token:
-        print(f'--> [HANDSHAKE DETECTED] URL Token: {validation_token}')
-        return Response(str(validation_token), status=200, mimetype='text/plain')
-
-    try:
-        raw_body_text = request.data.decode('utf-8') if request.data else ''
-        if 'validationtoken=' in raw_body_text:
-            extracted = raw_body_text.split('validationtoken=')[-1]
-            print(f'--> [HANDSHAKE DETECTED] Body Token: {extracted}')
-            return Response(str(extracted), status=200, mimetype='text/plain')
-    except Exception as error:
-        print(f'--> [Handshake Extraction Failure]: {error}')
-
-    print('[Webhook Event] Intercepted a new live modification ping.')
-    return Response(status=200)
 
 
 @app.post('/api/gtfs/upload')
